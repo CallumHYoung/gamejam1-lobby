@@ -8,12 +8,15 @@ Showcase & spec: https://github.com/CallumHYoung/gamejam
 
 ## What you get out of the box
 
-- A minimal working game (`index.html` + `game.js`) — moving square, exit portal, incoming-portal spawn logic, auto-picks a destination from the live jam registry.
+- A minimal working game (`index.html` + `game.js`) — moving circle, exit portal, incoming-portal spawn logic, auto-picks a destination from the live jam registry.
+- **Realtime multiplayer** via [Trystero](https://github.com/dmotz/trystero). Pure P2P over BitTorrent trackers — no backend, no accounts, no keys. Open two tabs and you'll see each other as circles in the same demo room. Works from the internet, not just localhost.
 - `portal.js` — the Portal Protocol helper library. ~80 lines, no dependencies. This is the only hard requirement of the jam.
 - `.github/workflows/pages.yml` — a GitHub Actions workflow that deploys your game to GitHub Pages on every push to `main`.
 - Purple vibes to match the jam's theme.
 
-Try the starter as-is: after you create your repo and enable Pages, the starter game will already portal to other jam games.
+Try the starter as-is: after you create your repo and enable Pages, the starter game will already portal to other jam games *and* show other players that are currently in the demo room.
+
+**Multiplayer is optional per the jam spec.** If you don't want it, delete the `Trystero` block in `game.js` (clearly commented) and the `#peers` element in `index.html`. Your game will drop back to solo and the portal protocol still works.
 
 ---
 

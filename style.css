@@ -54,8 +54,16 @@ body {
   font-size: 1.1rem;
 }
 
+#peers {
+  font-size: 0.8rem;
+  color: var(--accent3);
+  text-shadow: 0 0 8px var(--accent3);
+  margin-top: 0.15rem;
+  letter-spacing: 0.02em;
+}
+
 #hint {
   opacity: 0.65;
   font-size: 0.75rem;
-  margin-top: 0.2rem;
+  margin-top: 0.35rem;
 }
