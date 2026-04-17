@@ -336,7 +336,11 @@ for (let i = 0; i < 40; i++) {
 // ------------------------------------------------------------------
 
 const player = new THREE.Group();
-player.position.set(0, 0, 8); // spawn just outside the wishing circle
+// Default spawn is just outside the wishing circle. If the player
+// arrived via a portal, spawn them past the return portal (further
+// out) so they aren't immediately sucked back through it.
+const spawnZ = incoming.fromPortal && incoming.ref ? 13 : 8;
+player.position.set(0, 0, spawnZ);
 scene.add(player);
 
 const initialColor = new THREE.Color('#' + incoming.color);
@@ -374,14 +378,86 @@ function applyBlessing(b) {
 }
 
 // ------------------------------------------------------------------
-// Registry fetch + portal spawn
+// Return portal — shown only when the player arrived from another
+// game. Placed between spawn and the outer ring so it's easy to find
+// but out of the way of the main portal circle and the pedestals.
+// ------------------------------------------------------------------
+
+let returnPortal = null;
+if (incoming.ref) {
+  const group = new THREE.Group();
+  group.position.set(0, 0, 11);
+  group.lookAt(0, 0, 0);
+
+  const color = new THREE.Color(0x4ff0ff);
+  const torus = new THREE.Mesh(
+    new THREE.TorusGeometry(1.4, 0.18, 20, 72),
+    new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.8,
+      metalness: 0.15,
+      roughness: 0.35,
+    }),
+  );
+  torus.position.y = 1.9;
+  group.add(torus);
+
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(1.25, 48),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.4,
+      side: THREE.DoubleSide,
+    }),
+  );
+  disc.position.y = 1.9;
+  group.add(disc);
+
+  const light = new THREE.PointLight(color, 0.7, 6, 2);
+  light.position.y = 1.9;
+  group.add(light);
+
+  const title = textSprite('← back', {
+    color: '#0b3240',
+    bg: 'rgba(220,250,255,0.95)',
+    fontSize: 44,
+    fontWeight: 700,
+  });
+  title.position.set(0, 3.9, 0);
+  group.add(title);
+
+  const sub = textSprite('return to where you came from', {
+    color: '#2f6070',
+    bg: 'rgba(235,250,255,0.85)',
+    fontSize: 24,
+    italic: true,
+    fontWeight: 500,
+  });
+  sub.position.set(0, 3.28, 0);
+  group.add(sub);
+
+  returnPortal = { group, torus, disc, target: incoming.ref };
+  scene.add(group);
+}
+
+// ------------------------------------------------------------------
+// Registry fetch + portal spawn. We filter out any entry whose URL
+// matches this page, otherwise the lobby would spawn a portal
+// pointing back at itself.
 // ------------------------------------------------------------------
 
 (async () => {
   const games = await Portal.fetchJamRegistry();
-  if (!games || games.length === 0) {
-    // No real submissions yet — keep the lobby friendly with a single
-    // portal back to the jam homepage so visitors aren't stranded.
+  const here = window.location.href.split('?')[0];
+  const norm = (s) => s.split('?')[0].replace(/\/$/, '');
+  const others = (games || []).filter((g) => norm(g.url) !== norm(here));
+
+  if (others.length === 0) {
+    // No other games in the registry — keep the lobby friendly with a
+    // single portal back to the jam homepage so visitors aren't
+    // stranded.
     makePortal(
       {
         title: 'Jam hub',
@@ -392,8 +468,8 @@ function applyBlessing(b) {
     );
     return;
   }
-  games.forEach((g, i) => {
-    const angle = (i / games.length) * Math.PI * 2;
+  others.forEach((g, i) => {
+    const angle = (i / others.length) * Math.PI * 2;
     makePortal(g, angle);
   });
 })();
@@ -463,6 +539,26 @@ function loop(now) {
         const colorHex = currentBlessing ? currentBlessing.hex : incoming.color;
         const speed = currentBlessing?.speed || incoming.speed || 5;
         Portal.sendPlayerThroughPortal(g.userData.game.url, {
+          username: incoming.username,
+          color: colorHex,
+          speed,
+        });
+      }
+    }
+  }
+
+  // Return portal animation + collision
+  if (returnPortal) {
+    returnPortal.torus.rotation.z += dt * 0.9;
+    returnPortal.disc.material.opacity = 0.32 + Math.sin(t * 2.5) * 0.14;
+    if (!redirecting) {
+      const dx = player.position.x - returnPortal.group.position.x;
+      const dz = player.position.z - returnPortal.group.position.z;
+      if (Math.hypot(dx, dz) < 1.35) {
+        redirecting = true;
+        const colorHex = currentBlessing ? currentBlessing.hex : incoming.color;
+        const speed = currentBlessing?.speed || incoming.speed || 5;
+        Portal.sendPlayerThroughPortal(returnPortal.target, {
           username: incoming.username,
           color: colorHex,
           speed,
