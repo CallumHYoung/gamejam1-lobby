@@ -1,308 +1,498 @@
-// Minimal top-down game demonstrating two things at once:
-//   1. The Portal Protocol (mandatory for the jam)
-//   2. Optional realtime multiplayer via Trystero (Nostr strategy).
-//      No backend, no accounts, no API keys — just browser-to-browser
-//      WebRTC using public Nostr relays as signaling.
+// Ordinary Game Jam #1 — Lobby
 //
-// The game renders and plays solo *immediately*. Multiplayer connects
-// in the background; if it fails (CDN blocked, every relay down,
-// restrictive network) the HUD flips to "multiplayer offline" and the
-// game keeps running. Rip everything out and replace with your own
-// game — just keep the Portal.* calls.
+// A 3D hub that reads jam1.json and spawns a portal for each submission.
+// Theme: "double meaning" + mechanic: "choices" (roguelike-style).
+//
+// Read lightly:
+//   - Every sign has two readings: the game title, then the short pitch
+//     underneath — one place, two meanings.
+//   - Three gift pedestals in the center offer roguelike-style choices.
+//     Every gift is kind — no punishments, just different flavors of
+//     encouragement. Each gift's name has a second reading printed below.
+//   - Whatever gift you're carrying travels with you through the portal
+//     (color + speed ride along via the Portal Protocol).
 
-// ------------------------------------------------------------------
-// Portal protocol + core game setup
-// ------------------------------------------------------------------
-
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
-const W = canvas.width;
-const H = canvas.height;
+import * as THREE from 'three';
 
 const incoming = Portal.readPortalParams();
 document.getElementById('username').textContent = incoming.username;
 
-const nextTarget = await Portal.pickPortalTarget();
-
-const player = {
-  x: W / 2,
-  y: H / 2,
-  r: 16,
-  speed: incoming.speed || 5,
-  color: '#' + incoming.color,
-};
-
-const exitPortal = {
-  x: W - 120,
-  y: H / 2,
-  r: 44,
-  color: '#c64bff',
-  label: nextTarget ? `→ ${nextTarget.title}` : 'no destinations yet',
-  target: nextTarget?.url || null,
-  pulse: 0,
-};
-
-const returnPortal = incoming.ref ? {
-  x: 120,
-  y: H / 2,
-  r: 44,
-  color: '#4ff0ff',
-  label: '← back',
-  target: incoming.ref,
-  pulse: 0,
-} : null;
-
-if (incoming.fromPortal && returnPortal) {
-  player.x = returnPortal.x + returnPortal.r + 30;
-  player.y = returnPortal.y;
-}
-
 // ------------------------------------------------------------------
-// Multiplayer via Trystero (optional, non-blocking)
+// Scene, camera, renderer
 // ------------------------------------------------------------------
-// To delete multiplayer entirely: remove everything between the dashed
-// lines above and below this block, plus the <div id="peers"> in
-// index.html. The game loop below doesn't depend on any of it.
 
-const peers = new Map();
-const peerCountEl = document.getElementById('peers');
-let sendState = null;
-let room = null;
+const canvas = document.getElementById('game');
+const renderer = new THREE.WebGLRenderer({ antialias: true, canvas });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 
-function setPeerStatus(text, isError = false) {
-  if (!peerCountEl) return;
-  peerCountEl.textContent = text;
-  peerCountEl.style.color = isError ? '#ff6b6b' : '';
-}
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf6d5e8);
+scene.fog = new THREE.Fog(0xf6d5e8, 28, 70);
 
-function refreshPeerCount() {
-  setPeerStatus(`${peers.size + 1} online`);
-}
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 12, 20);
+camera.lookAt(0, 1, 0);
 
-function broadcastSelf() {
-  if (!sendState) return;
-  sendState({
-    x: player.x,
-    y: player.y,
-    color: player.color,
-    username: incoming.username,
-  });
-}
-
-async function loadTrystero() {
-  // Try multiple CDN paths in order so a single CDN hiccup doesn't
-  // kill multiplayer. trystero >= 0.23 defaults to the Nostr strategy
-  // which has hundreds of public relays and is the most reliable
-  // option for zero-config P2P.
-  const urls = [
-    'https://esm.run/trystero@0.23',
-    'https://cdn.jsdelivr.net/npm/trystero@0.23/+esm',
-    'https://esm.sh/trystero@0.23',
-  ];
-  let lastErr;
-  for (const url of urls) {
-    try {
-      const mod = await import(url);
-      if (mod && typeof mod.joinRoom === 'function') {
-        console.log('[jam] loaded trystero from', url);
-        return mod;
-      }
-      lastErr = new Error(`module from ${url} has no joinRoom export`);
-    } catch (err) {
-      console.warn('[jam] cdn failed:', url, err.message);
-      lastErr = err;
-    }
-  }
-  throw lastErr || new Error('could not load trystero');
-}
-
-async function setupMultiplayer() {
-  try {
-    setPeerStatus('connecting…');
-    const { joinRoom } = await loadTrystero();
-
-    room = joinRoom(
-      { appId: 'ordinary-game-jam-starter' },
-      'demo-room'
-    );
-    const [send, getState] = room.makeAction('state');
-    sendState = send;
-
-    room.onPeerJoin(id => {
-      console.log('[jam] peer joined:', id);
-      peers.set(id, null);
-      broadcastSelf();
-      refreshPeerCount();
-    });
-
-    room.onPeerLeave(id => {
-      console.log('[jam] peer left:', id);
-      peers.delete(id);
-      refreshPeerCount();
-    });
-
-    getState((data, peerId) => {
-      const existing = peers.get(peerId);
-      peers.set(peerId, {
-        ...data,
-        renderX: existing?.renderX ?? data.x,
-        renderY: existing?.renderY ?? data.y,
-      });
-    });
-
-    refreshPeerCount();
-    broadcastSelf();
-    console.log('[jam] multiplayer ready (nostr)');
-  } catch (err) {
-    console.error('[jam] multiplayer setup failed:', err);
-    setPeerStatus('multiplayer offline', true);
-  }
-}
-
-setPeerStatus('connecting…');
-setupMultiplayer();
-
-addEventListener('beforeunload', () => {
-  if (room) {
-    try { room.leave(); } catch {}
-  }
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
 });
 
 // ------------------------------------------------------------------
-// Game loop (runs regardless of multiplayer state)
+// Lighting
 // ------------------------------------------------------------------
 
-const stars = Array.from({ length: 80 }, () => ({
-  x: Math.random() * W,
-  y: Math.random() * H,
-  s: Math.random() * 1.5 + 0.3,
-  t: Math.random() * Math.PI * 2,
-}));
+scene.add(new THREE.HemisphereLight(0xffe4f1, 0xd1a6c8, 1.2));
+const sun = new THREE.DirectionalLight(0xfff2d6, 0.85);
+sun.position.set(12, 22, 8);
+scene.add(sun);
+
+// ------------------------------------------------------------------
+// Ground + inner wishing ring
+// ------------------------------------------------------------------
+
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(32, 72),
+  new THREE.MeshStandardMaterial({ color: 0xfbe0ec, roughness: 0.95 }),
+);
+floor.rotation.x = -Math.PI / 2;
+scene.add(floor);
+
+const innerRing = new THREE.Mesh(
+  new THREE.RingGeometry(3.2, 3.5, 72),
+  new THREE.MeshStandardMaterial({
+    color: 0xfff0c4,
+    emissive: 0xffd49a,
+    emissiveIntensity: 0.5,
+    side: THREE.DoubleSide,
+  }),
+);
+innerRing.rotation.x = -Math.PI / 2;
+innerRing.position.y = 0.01;
+scene.add(innerRing);
+
+// Outer path ring, just a soft visual guide
+const outerRing = new THREE.Mesh(
+  new THREE.RingGeometry(13.6, 14.4, 96),
+  new THREE.MeshStandardMaterial({
+    color: 0xffdfee,
+    emissive: 0xffc2dd,
+    emissiveIntensity: 0.25,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.5,
+  }),
+);
+outerRing.rotation.x = -Math.PI / 2;
+outerRing.position.y = 0.02;
+scene.add(outerRing);
+
+// ------------------------------------------------------------------
+// Text label helper — builds a CanvasTexture sprite that always faces
+// the camera. Sprites are cheap and readable from any angle.
+// ------------------------------------------------------------------
+
+function textSprite(text, opts = {}) {
+  const {
+    color = '#3a1a3e',
+    bg = 'rgba(255,255,255,0.92)',
+    fontSize = 44,
+    fontWeight = 700,
+    italic = false,
+    pad = 26,
+    radius = 18,
+  } = opts;
+
+  const cvs = document.createElement('canvas');
+  const ctx = cvs.getContext('2d');
+  const fontStyle = italic ? 'italic' : 'normal';
+  const font = `${fontStyle} ${fontWeight} ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.font = font;
+  const metrics = ctx.measureText(text);
+  const w = Math.ceil(metrics.width) + pad * 2;
+  const h = fontSize + pad * 1.3;
+  cvs.width = w;
+  cvs.height = h;
+
+  ctx.font = font;
+  ctx.fillStyle = bg;
+  roundRect(ctx, 0, 0, w, h, radius);
+  ctx.fill();
+
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, h / 2);
+
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+  // scale to world units — ~100px per world unit
+  sprite.scale.set(w / 100, h / 100, 1);
+  return sprite;
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// ------------------------------------------------------------------
+// Center welcome sign
+// ------------------------------------------------------------------
+
+const welcome = textSprite('a lobby, read two ways', {
+  color: '#4a1f57',
+  bg: 'rgba(255,255,255,0.85)',
+  fontSize: 34,
+  fontWeight: 500,
+  italic: true,
+});
+welcome.position.set(0, 5.2, 0);
+scene.add(welcome);
+
+// ------------------------------------------------------------------
+// Blessing pedestals — the "choices" mechanic.
+// Each gift has a primary name and a second reading underneath. They
+// are purely positive; the "choice" is about flavor, not tradeoff.
+// ------------------------------------------------------------------
+
+const BLESSINGS = [
+  { key: 'sunshine',  name: 'Sunshine',  aka: 'also: a bright heart',   hex: 'fcd34d', speed: 5 },
+  { key: 'softness',  name: 'Softness',  aka: 'also: a gentle step',    hex: 'f9a8d4', speed: 5 },
+  { key: 'starlight', name: 'Starlight', aka: 'also: a curious soul',   hex: '93c5fd', speed: 6 },
+];
+
+const pedestals = [];
+
+BLESSINGS.forEach((b, i) => {
+  const angle = (i / BLESSINGS.length) * Math.PI * 2 + Math.PI / 2;
+  const r = 2.6;
+  const group = new THREE.Group();
+  group.position.set(Math.cos(angle) * r, 0, Math.sin(angle) * r);
+
+  const base = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.6, 0.75, 0.35, 28),
+    new THREE.MeshStandardMaterial({ color: 0xfff8e7, roughness: 0.6 }),
+  );
+  base.position.y = 0.175;
+  group.add(base);
+
+  const colorNum = parseInt(b.hex, 16);
+  const orb = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(0.42, 2),
+    new THREE.MeshStandardMaterial({
+      color: colorNum,
+      emissive: colorNum,
+      emissiveIntensity: 0.6,
+      roughness: 0.25,
+    }),
+  );
+  orb.position.y = 1.1;
+  group.add(orb);
+
+  const orbLight = new THREE.PointLight(colorNum, 0.9, 4, 2);
+  orbLight.position.y = 1.1;
+  group.add(orbLight);
+
+  const nameLabel = textSprite(b.name, {
+    color: '#3a1a3e',
+    bg: 'rgba(255,255,255,0.94)',
+    fontSize: 38,
+    fontWeight: 700,
+  });
+  nameLabel.position.set(0, 2.15, 0);
+  group.add(nameLabel);
+
+  const akaLabel = textSprite(b.aka, {
+    color: '#6d466f',
+    bg: 'rgba(255,240,248,0.85)',
+    fontSize: 24,
+    italic: true,
+    fontWeight: 500,
+  });
+  akaLabel.position.set(0, 1.62, 0);
+  group.add(akaLabel);
+
+  group.userData = { blessing: b, orb, baseAngle: angle };
+  pedestals.push(group);
+  scene.add(group);
+});
+
+// ------------------------------------------------------------------
+// Portals — one per registry game, arranged around the outer ring.
+// Each portal shows its title on top and the short pitch underneath;
+// two readings of the same doorway.
+// ------------------------------------------------------------------
+
+const portals = [];
+
+function makePortal(game, angle) {
+  const group = new THREE.Group();
+  const R = 14;
+  group.position.set(Math.cos(angle) * R, 0, Math.sin(angle) * R);
+  // Orient the whole group so its local -Z faces the hub center; the
+  // torus/disc are added as children with their default axes and
+  // inherit this orientation, which places their visible faces radial
+  // to the circle without any extra math.
+  group.lookAt(0, 0, 0);
+
+  // Hue cycles gently around the circle so colors don't clash.
+  const hue = ((angle / (Math.PI * 2)) + 0.85) % 1;
+  const color = new THREE.Color().setHSL(hue, 0.55, 0.68);
+
+  const torus = new THREE.Mesh(
+    new THREE.TorusGeometry(1.4, 0.18, 20, 72),
+    new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.75,
+      metalness: 0.15,
+      roughness: 0.35,
+    }),
+  );
+  torus.position.y = 1.9;
+  group.add(torus);
+
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(1.25, 48),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.38,
+      side: THREE.DoubleSide,
+    }),
+  );
+  disc.position.y = 1.9;
+  group.add(disc);
+
+  const portalLight = new THREE.PointLight(color, 0.6, 6, 2);
+  portalLight.position.y = 1.9;
+  group.add(portalLight);
+
+  const title = textSprite(game.title, {
+    color: '#3a1a3e',
+    bg: 'rgba(255,255,255,0.95)',
+    fontSize: 44,
+    fontWeight: 700,
+  });
+  title.position.set(0, 3.9, 0);
+  group.add(title);
+
+  const sub = textSprite(game.description || 'also: somewhere to visit', {
+    color: '#6d466f',
+    bg: 'rgba(255,240,248,0.85)',
+    fontSize: 24,
+    italic: true,
+    fontWeight: 500,
+  });
+  sub.position.set(0, 3.28, 0);
+  group.add(sub);
+
+  group.userData = { game, torus, disc, angle };
+  portals.push(group);
+  scene.add(group);
+}
+
+// ------------------------------------------------------------------
+// Drifting kindness petals — quiet ambient flair.
+// ------------------------------------------------------------------
+
+const petals = [];
+const petalGeo = new THREE.PlaneGeometry(0.18, 0.18);
+const petalMat = new THREE.MeshBasicMaterial({
+  color: 0xffc2dd,
+  transparent: true,
+  opacity: 0.75,
+  side: THREE.DoubleSide,
+});
+for (let i = 0; i < 40; i++) {
+  const m = new THREE.Mesh(petalGeo, petalMat);
+  m.position.set(
+    (Math.random() - 0.5) * 40,
+    Math.random() * 8 + 1,
+    (Math.random() - 0.5) * 40,
+  );
+  m.userData = {
+    vy: -(Math.random() * 0.3 + 0.15),
+    vx: (Math.random() - 0.5) * 0.15,
+    spin: (Math.random() - 0.5) * 1.5,
+  };
+  petals.push(m);
+  scene.add(m);
+}
+
+// ------------------------------------------------------------------
+// Player avatar
+// ------------------------------------------------------------------
+
+const player = new THREE.Group();
+player.position.set(0, 0, 8); // spawn just outside the wishing circle
+scene.add(player);
+
+const initialColor = new THREE.Color('#' + incoming.color);
+const bodyMat = new THREE.MeshStandardMaterial({
+  color: initialColor,
+  emissive: initialColor,
+  emissiveIntensity: 0.3,
+  roughness: 0.35,
+});
+const body = new THREE.Mesh(new THREE.SphereGeometry(0.45, 28, 28), bodyMat);
+body.position.y = 0.5;
+player.add(body);
+
+// Little halo to hint at "blessing"
+const halo = new THREE.Mesh(
+  new THREE.TorusGeometry(0.55, 0.04, 12, 32),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 }),
+);
+halo.position.y = 1.0;
+halo.rotation.x = Math.PI / 2;
+player.add(halo);
+
+let currentBlessing = null;
+const blessingEl = document.getElementById('blessing');
+
+function applyBlessing(b) {
+  if (currentBlessing?.key === b.key) return;
+  currentBlessing = b;
+  const c = new THREE.Color('#' + b.hex);
+  bodyMat.color.copy(c);
+  bodyMat.emissive.copy(c);
+  halo.material.color.copy(c);
+  halo.material.opacity = 0.85;
+  blessingEl.textContent = `blessing: ${b.name} — ${b.aka.replace(/^also: /, '')}`;
+}
+
+// ------------------------------------------------------------------
+// Registry fetch + portal spawn
+// ------------------------------------------------------------------
+
+(async () => {
+  const games = await Portal.fetchJamRegistry();
+  if (!games || games.length === 0) {
+    // No real submissions yet — keep the lobby friendly with a single
+    // portal back to the jam homepage so visitors aren't stranded.
+    makePortal(
+      {
+        title: 'Jam hub',
+        description: 'also: the front door',
+        url: 'https://callumhyoung.github.io/gamejam/',
+      },
+      0,
+    );
+    return;
+  }
+  games.forEach((g, i) => {
+    const angle = (i / games.length) * Math.PI * 2;
+    makePortal(g, angle);
+  });
+})();
+
+// ------------------------------------------------------------------
+// Input
+// ------------------------------------------------------------------
 
 const keys = {};
-addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; });
-addEventListener('keyup',   e => { keys[e.key.toLowerCase()] = false; });
+addEventListener('keydown', (e) => { keys[e.key.toLowerCase()] = true; });
+addEventListener('keyup',   (e) => { keys[e.key.toLowerCase()] = false; });
+
+// ------------------------------------------------------------------
+// Main loop
+// ------------------------------------------------------------------
 
 let redirecting = false;
-
-function attemptPortal(portal) {
-  if (redirecting || !portal || !portal.target) return;
-  const dx = player.x - portal.x;
-  const dy = player.y - portal.y;
-  if (Math.hypot(dx, dy) < portal.r + player.r - 4) {
-    redirecting = true;
-    Portal.sendPlayerThroughPortal(portal.target, {
-      username: incoming.username,
-      color: incoming.color,
-      speed: player.speed,
-    });
-  }
-}
-
-let lastBroadcast = 0;
-
-function update(dt) {
-  const v = player.speed;
-  if (keys['w'] || keys['arrowup'])    player.y -= v;
-  if (keys['s'] || keys['arrowdown'])  player.y += v;
-  if (keys['a'] || keys['arrowleft'])  player.x -= v;
-  if (keys['d'] || keys['arrowright']) player.x += v;
-  player.x = Math.max(player.r, Math.min(W - player.r, player.x));
-  player.y = Math.max(player.r, Math.min(H - player.r, player.y));
-
-  exitPortal.pulse += dt * 3;
-  if (returnPortal) returnPortal.pulse += dt * 3;
-
-  attemptPortal(exitPortal);
-  if (returnPortal) attemptPortal(returnPortal);
-
-  const now = performance.now();
-  if (now - lastBroadcast > 66) {
-    lastBroadcast = now;
-    broadcastSelf();
-  }
-
-  for (const peer of peers.values()) {
-    if (!peer) continue;
-    const k = Math.min(1, dt * 12);
-    peer.renderX += (peer.x - peer.renderX) * k;
-    peer.renderY += (peer.y - peer.renderY) * k;
-  }
-}
-
-function drawStars(t) {
-  for (const s of stars) {
-    const a = 0.5 + 0.5 * Math.sin(t * 2 + s.t);
-    ctx.fillStyle = `rgba(255,255,255,${a * 0.8})`;
-    ctx.fillRect(s.x, s.y, s.s, s.s);
-  }
-}
-
-function drawPortal(p) {
-  const glow = 18 + Math.sin(p.pulse) * 6;
-  ctx.save();
-  ctx.shadowColor = p.color;
-  ctx.shadowBlur = glow;
-  ctx.strokeStyle = p.color;
-  ctx.lineWidth = 5;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.lineWidth = 2;
-  ctx.globalAlpha = 0.55;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, p.r - 10 + Math.sin(p.pulse) * 4, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.fillStyle = '#fff';
-  ctx.font = '600 14px ui-sans-serif, system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(p.label, p.x, p.y - p.r - 12);
-}
-
-function drawAvatar(x, y, color, username, alpha) {
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 16;
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(x, y, player.r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-  if (username) {
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(username, x, y - player.r - 8);
-  }
-}
-
-function drawPeers() {
-  for (const peer of peers.values()) {
-    if (!peer) continue;
-    drawAvatar(peer.renderX, peer.renderY, peer.color || '#888', peer.username || '?', 0.85);
-  }
-}
-
-function render(t) {
-  ctx.fillStyle = '#120826';
-  ctx.fillRect(0, 0, W, H);
-  drawStars(t);
-  drawPortal(exitPortal);
-  if (returnPortal) drawPortal(returnPortal);
-  drawPeers();
-  drawAvatar(player.x, player.y, player.color, '', 1);
-}
-
+let t = 0;
 let last = performance.now();
+
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  update(dt);
-  render(now / 1000);
+  t += dt;
+
+  // Movement
+  const baseSpeed = currentBlessing?.speed || incoming.speed || 5;
+  const v = baseSpeed * dt;
+  let mx = 0, mz = 0;
+  if (keys['w'] || keys['arrowup'])    mz -= 1;
+  if (keys['s'] || keys['arrowdown'])  mz += 1;
+  if (keys['a'] || keys['arrowleft'])  mx -= 1;
+  if (keys['d'] || keys['arrowright']) mx += 1;
+  const len = Math.hypot(mx, mz);
+  if (len > 0) { mx /= len; mz /= len; }
+  player.position.x += mx * v;
+  player.position.z += mz * v;
+
+  // Soft clamp to the floor disc
+  const maxR = 30;
+  const pd = Math.hypot(player.position.x, player.position.z);
+  if (pd > maxR) {
+    player.position.x = (player.position.x / pd) * maxR;
+    player.position.z = (player.position.z / pd) * maxR;
+  }
+
+  body.position.y = 0.5 + Math.sin(t * 4 + player.position.x) * 0.04;
+  halo.rotation.z += dt * 1.2;
+
+  // Camera follows gently from behind-above
+  const camTargetX = player.position.x * 0.35;
+  const camTargetZ = player.position.z * 0.35 + 18;
+  camera.position.x += (camTargetX - camera.position.x) * 0.06;
+  camera.position.z += (camTargetZ - camera.position.z) * 0.06;
+  camera.lookAt(player.position.x, 1, player.position.z);
+
+  // Portal animation + collision
+  for (const g of portals) {
+    g.userData.torus.rotation.z += dt * 0.9;
+    g.userData.disc.material.opacity = 0.3 + Math.sin(t * 2.5 + g.userData.angle) * 0.14;
+
+    if (!redirecting) {
+      const dx = player.position.x - g.position.x;
+      const dz = player.position.z - g.position.z;
+      if (Math.hypot(dx, dz) < 1.35) {
+        redirecting = true;
+        const colorHex = currentBlessing ? currentBlessing.hex : incoming.color;
+        const speed = currentBlessing?.speed || incoming.speed || 5;
+        Portal.sendPlayerThroughPortal(g.userData.game.url, {
+          username: incoming.username,
+          color: colorHex,
+          speed,
+        });
+      }
+    }
+  }
+
+  // Pedestal orbs: bob, spin, pick up on proximity
+  for (const p of pedestals) {
+    p.userData.orb.position.y = 1.1 + Math.sin(t * 2 + p.userData.baseAngle * 3) * 0.1;
+    p.userData.orb.rotation.y += dt * 0.55;
+    const dx = player.position.x - p.position.x;
+    const dz = player.position.z - p.position.z;
+    if (Math.hypot(dx, dz) < 1.0) applyBlessing(p.userData.blessing);
+  }
+
+  // Petals
+  for (const m of petals) {
+    m.position.y += m.userData.vy * dt;
+    m.position.x += m.userData.vx * dt;
+    m.rotation.z += m.userData.spin * dt;
+    if (m.position.y < 0.1) {
+      m.position.y = 8 + Math.random() * 2;
+      m.position.x = (Math.random() - 0.5) * 40;
+      m.position.z = (Math.random() - 0.5) * 40;
+    }
+  }
+
+  renderer.render(scene, camera);
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);

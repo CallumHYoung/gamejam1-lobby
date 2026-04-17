@@ -3,16 +3,25 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>My Ordinary Game Jam Game</title>
+<title>Ordinary Game Jam #1 — Lobby</title>
 <link rel="stylesheet" href="style.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
 </head>
 <body>
 <div id="hud">
+  <div id="title">the double doors</div>
+  <div id="subtitle">a lobby with two readings — pick a gift, pick a game</div>
   <div id="username">loading…</div>
-  <div id="peers">1 online</div>
-  <div id="hint">WASD / arrows to move — walk into a portal to travel</div>
+  <div id="blessing">blessing: (walk onto a pedestal)</div>
+  <div id="hint">WASD / arrows — touch a pedestal to receive a gift, touch a portal to travel</div>
 </div>
-<canvas id="game" width="960" height="540"></canvas>
+<canvas id="game"></canvas>
 <script src="portal.js"></script>
 <script type="module" src="game.js"></script>
 </body>
