@@ -15,12 +15,35 @@
 </head>
 <body>
 <div id="hud">
-  <div id="title">the double doors</div>
-  <div id="subtitle">a lobby with two readings — pick a gift, pick a game</div>
   <div id="username">loading…</div>
-  <div id="blessing">blessing: (walk onto a pedestal)</div>
-  <div id="hint">WASD / arrows — touch a pedestal to receive a gift, touch a portal to travel</div>
+  <div id="traveler"></div>
+  <div id="hint">WASD to move — click the scene to look around, Esc to release</div>
 </div>
+
+<div id="choose">
+  <div class="panel">
+    <h1>choose a traveler</h1>
+    <p class="sub">one pick, then you're off</p>
+    <div class="cards">
+      <button class="card" data-key="spark">
+        <div class="swatch" style="background:#e8b64c"></div>
+        <div class="name">Spark</div>
+        <div class="desc">quick on their feet</div>
+      </button>
+      <button class="card" data-key="drift">
+        <div class="swatch" style="background:#7fb9ae"></div>
+        <div class="name">Drift</div>
+        <div class="desc">steady, curious</div>
+      </button>
+      <button class="card" data-key="wander">
+        <div class="swatch" style="background:#a892c6"></div>
+        <div class="name">Wander</div>
+        <div class="desc">takes their time</div>
+      </button>
+    </div>
+  </div>
+</div>
+
 <canvas id="game"></canvas>
 <script src="portal.js"></script>
 <script type="module" src="game.js"></script>
