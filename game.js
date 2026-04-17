@@ -409,12 +409,17 @@ const travelerEl = document.getElementById('traveler');
 function pickTraveler(choice) {
   traveler = choice;
   setCharacterColor(choice.hex);
-  travelerEl.textContent = `traveler: ${choice.name}`;
-  chooseEl.classList.add('done');
-  setTimeout(() => chooseEl.remove(), 500);
+  if (travelerEl) travelerEl.textContent = `traveler: ${choice.name}`;
+  if (chooseEl) {
+    chooseEl.classList.add('done');
+    setTimeout(() => chooseEl.remove(), 500);
+  }
 }
 
-if (incoming.fromPortal) {
+// Only skip the picker when we genuinely have a returning traveler —
+// that is, fromPortal is set AND they have a ref back to the previous
+// game. A bare `?portal=true` with no ref shouldn't suppress choices.
+if (chooseEl && incoming.fromPortal && incoming.ref) {
   pickTraveler({
     key: 'return',
     hex: incoming.color,
@@ -422,10 +427,13 @@ if (incoming.fromPortal) {
     speed: incoming.speed || 5,
     desc: 'welcome back',
   });
-} else {
+} else if (chooseEl) {
   for (const btn of chooseEl.querySelectorAll('.card')) {
     btn.addEventListener('click', () => pickTraveler(CHOICES[btn.dataset.key]));
   }
+} else {
+  // No overlay in the DOM (shouldn't happen, but don't wedge the loop).
+  pickTraveler(CHOICES.drift);
 }
 
 // ------------------------------------------------------------------
@@ -449,7 +457,8 @@ canvas.addEventListener('click', () => {
 document.addEventListener('mousemove', (e) => {
   if (document.pointerLockElement !== canvas) return;
   yaw -= e.movementX * 0.0028;
-  pitch -= e.movementY * 0.0028;
+  // Mouse down should tilt view down: camera rises, so pitch grows.
+  pitch += e.movementY * 0.0028;
   pitch = Math.max(0.08, Math.min(1.1, pitch));
 });
 
