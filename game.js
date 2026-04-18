@@ -175,18 +175,18 @@ function playCrunch(volume = 1.0, pan = 0) {
 
   const filter = sfxCtx.createBiquadFilter();
   filter.type = 'lowpass';
-  const fBase = 620 + Math.random() * 180;
+  const fBase = 430 + Math.random() * 110;
   filter.frequency.setValueAtTime(fBase, t);
-  filter.frequency.exponentialRampToValueAtTime(Math.max(180, fBase * 0.45), t + 0.18);
-  filter.Q.value = 0.4;
+  filter.frequency.exponentialRampToValueAtTime(Math.max(160, fBase * 0.45), t + 0.22);
+  filter.Q.value = 0.35;
 
   const gain = sfxCtx.createGain();
-  const peak = Math.max(0, Math.min(1, volume)) * 0.32;
+  const peak = Math.max(0, Math.min(1, volume)) * 0.2;
   gain.gain.setValueAtTime(0, t);
-  // Slow attack (~30ms) kills the click. Softer exponential tail reads
-  // as settling into snow rather than a sharp cutoff.
-  gain.gain.linearRampToValueAtTime(peak, t + 0.03);
-  gain.gain.exponentialRampToValueAtTime(0.0005, t + 0.24);
+  // Slower attack (~55ms) rounds the transient off entirely. Longer
+  // exponential tail reads as a soft sink into snow.
+  gain.gain.linearRampToValueAtTime(peak, t + 0.055);
+  gain.gain.exponentialRampToValueAtTime(0.0004, t + 0.32);
 
   src.connect(filter);
   filter.connect(gain);
@@ -199,7 +199,7 @@ function playCrunch(volume = 1.0, pan = 0) {
     gain.connect(sfxCrunchBus);
   }
   src.start(t);
-  src.stop(t + 0.3);
+  src.stop(t + 0.4);
 }
 
 // Remote crunch: attenuate + pan based on listener (player + camera).
@@ -264,17 +264,19 @@ function buildPortalHums() {
     fund.start();
     high.start();
     breathOsc.start();
-    portalHums.push({ obj3d, gainNode: gain, maxGain: 0.4 });
+    portalHums.push({ obj3d, gainNode: gain, maxGain: 0.22 });
   };
-  portals.forEach((p, i) => make(p, 70 + (i % 3) * 4));
-  if (returnPortal) make(returnPortal.group, 58);
+  portals.forEach((p, i) => make(p, 150 + (i % 3) * 8));
+  if (returnPortal) make(returnPortal.group, 132);
 }
 
 function updatePortalHums() {
   if (!sfxCtx || !portalHums.length) return;
   const now = sfxCtx.currentTime;
   const px = player.position.x, pz = player.position.z;
-  const NEAR = 2.5, FAR = 9;
+  // Pulled in tight — the hum should be essentially inaudible unless
+  // the player is right up against a portal.
+  const NEAR = 0.8, FAR = 3.2;
   for (const h of portalHums) {
     const o = h.obj3d;
     if (!o) continue;
@@ -1603,7 +1605,7 @@ let jumpVy = 0;
 // so faster travelers crunch more often. A small random jitter per
 // step keeps it from sounding metronomic.
 let playerStepTimer = 0;
-const STEP_INTERVAL = 0.34;
+const STEP_INTERVAL = 0.58;
 
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
