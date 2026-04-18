@@ -118,7 +118,7 @@ scene.background = new THREE.Color(0x070a18);
 // Snowy haze — exponential falloff so distant objects dim smoothly
 // rather than stopping at a hard edge. Moon and stars opt out of fog.
 // Heavy density + lightened fog color reads as thick snow in the air.
-scene.fog = new THREE.FogExp2(0x1a2340, 0.07);
+scene.fog = new THREE.FogExp2(0x1a2340, 0.085);
 
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 200);
 
@@ -199,6 +199,10 @@ const lanternLight = new THREE.PointLight(0xffd494, 1.2, 10, 2);
 lanternLight.position.y = 1.55;
 scene.add(lanternLight);
 
+// Central lantern halo — added below after the radial glow texture
+// helper is defined. Declared as let so the block below can assign.
+let lanternHalo;
+
 // ------------------------------------------------------------------
 // Night sky — radial glow texture, full moon + halo, star field
 // ------------------------------------------------------------------
@@ -219,6 +223,30 @@ function makeRadialGlowTexture() {
   return tex;
 }
 const glowTex = makeRadialGlowTexture();
+
+// Shared builder for light-source halos. Additive + fog-disabled so
+// the colored glow adds onto the snow-haze rather than fading to fog
+// color; size attenuation means halos shrink to a pinprick at range
+// and bloom as the camera gets close, which reads as "lights finding
+// their way through the storm."
+function makeGlowHalo(color, scale, opacity) {
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex,
+    color,
+    transparent: true,
+    opacity,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    fog: false,
+  }));
+  sprite.scale.set(scale, scale, 1);
+  return sprite;
+}
+
+// Lantern halo now that the helper exists.
+lanternHalo = makeGlowHalo(0xffd494, 3.6, 0.55);
+lanternHalo.position.y = 1.55;
+scene.add(lanternHalo);
 
 // Full moon sits off to one side of the sky; halo fakes a soft bloom.
 const moonPos = new THREE.Vector3(-28, 32, -42);
@@ -300,14 +328,7 @@ for (let i = 0; i < LAMP_COUNT; i++) {
   scene.add(head);
   lampHeads.push(head);
 
-  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTex,
-    color: 0xffc680,
-    transparent: true,
-    opacity: 0.28,
-    depthWrite: false,
-  }));
-  halo.scale.set(1.4, 1.4, 1);
+  const halo = makeGlowHalo(0xffc680, 2.4, 0.5);
   halo.position.set(x, 3.4, z);
   scene.add(halo);
 
@@ -443,14 +464,7 @@ function makePortal(game, angle) {
   disc.position.y = 1.9;
   group.add(disc);
 
-  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTex,
-    color,
-    transparent: true,
-    opacity: 0.32,
-    depthWrite: false,
-  }));
-  halo.scale.set(4.2, 4.2, 1);
+  const halo = makeGlowHalo(color, 4.6, 0.6);
   halo.position.y = 1.9;
   group.add(halo);
 
@@ -518,14 +532,7 @@ if (incoming.ref) {
   disc.position.y = 1.9;
   group.add(disc);
 
-  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTex,
-    color,
-    transparent: true,
-    opacity: 0.36,
-    depthWrite: false,
-  }));
-  halo.scale.set(4.2, 4.2, 1);
+  const halo = makeGlowHalo(color, 4.6, 0.65);
   halo.position.y = 1.9;
   group.add(halo);
 
@@ -728,7 +735,12 @@ function buildCharacter(colorHex) {
   glowLight.position.y = 0.8;
   group.add(glowLight);
 
-  return { group, bodyMat, body, head, armL, armR, eyeL, eyeR, glowLight };
+  // Halo sprite so the player also reads as a beacon in the snow.
+  const halo = makeGlowHalo(color, 2.6, 0);
+  halo.position.y = 0.9;
+  group.add(halo);
+
+  return { group, bodyMat, body, head, armL, armR, eyeL, eyeR, glowLight, halo };
 }
 
 const character = buildCharacter(incoming.color);
@@ -744,6 +756,8 @@ function applyTravelerStyle(choice) {
   character.bodyMat.emissiveIntensity = choice.emissive;
   character.glowLight.color.copy(color);
   character.glowLight.intensity = choice.glow;
+  character.halo.material.color.copy(color);
+  character.halo.material.opacity = Math.min(0.55, choice.glow * 0.42);
 }
 
 // ------------------------------------------------------------------
@@ -1090,6 +1104,10 @@ function buildPeerAvatar(colorHex, name, travelerKey) {
   glowLight.position.y = 0.8;
   group.add(glowLight);
 
+  const halo = makeGlowHalo(color, 2.6, 0);
+  halo.position.y = 0.9;
+  group.add(halo);
+
   const nameTag = textSprite(String(name || 'guest').slice(0, 24), {
     color: '#2a2f3a',
     bg: 'rgba(255,253,247,0.9)',
@@ -1100,7 +1118,7 @@ function buildPeerAvatar(colorHex, name, travelerKey) {
   group.add(nameTag);
 
   group.userData = {
-    bodyMat, glowLight, nameTag,
+    bodyMat, glowLight, halo, nameTag,
     bubble: null, bubbleExpires: 0,
     displayName: name,
     travelerKey: null,
@@ -1115,14 +1133,17 @@ function applyPeerChoice(group, colorHex, travelerKey) {
   const color = new THREE.Color('#' + (colorHex || '888888'));
   ud.bodyMat.color.copy(color);
   ud.bodyMat.emissive.copy(color);
+  ud.halo.material.color.copy(color);
   const choice = travelerKey && CHOICES[travelerKey];
   if (choice) {
     ud.bodyMat.emissiveIntensity = choice.emissive;
     ud.glowLight.color.copy(color);
     ud.glowLight.intensity = choice.glow;
+    ud.halo.material.opacity = Math.min(0.55, choice.glow * 0.42);
   } else {
     ud.bodyMat.emissiveIntensity = 0;
     ud.glowLight.intensity = 0;
+    ud.halo.material.opacity = 0;
   }
   ud.travelerKey = travelerKey || null;
 }
