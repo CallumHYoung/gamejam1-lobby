@@ -258,7 +258,7 @@ function setRainLevel(mix) {
   if (!rainGain || !sfxCtx) return;
   // Quadratic so the hiss only really comes up when we're firmly in
   // the rain state, and fades away early on the way back to snow.
-  const target = Math.max(0, Math.min(1, mix)) ** 1.6 * 0.28;
+  const target = Math.max(0, Math.min(1, mix)) ** 1.6 * 0.09;
   rainGain.gain.setTargetAtTime(target, sfxCtx.currentTime, 0.6);
 }
 
