@@ -115,7 +115,9 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x070a18);
-scene.fog = new THREE.Fog(0x070a18, 28, 68);
+// Snowy haze — exponential falloff so distant objects dim smoothly
+// rather than stopping at a hard edge. Moon and stars opt out of fog.
+scene.fog = new THREE.FogExp2(0x0b1120, 0.028);
 
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 200);
 
@@ -319,9 +321,9 @@ for (let i = 0; i < LAMP_COUNT; i++) {
 // Snow — large Points cloud drifting down over the hub
 // ------------------------------------------------------------------
 
-const SNOW_COUNT = 320;
-const SNOW_AREA = 60;
-const SNOW_TOP = 18;
+const SNOW_COUNT = 750;
+const SNOW_AREA = 72;
+const SNOW_TOP = 20;
 const snowPositions = new Float32Array(SNOW_COUNT * 3);
 const snowVel = new Float32Array(SNOW_COUNT * 3);
 const snowSway = new Float32Array(SNOW_COUNT); // phase offset per flake
@@ -844,7 +846,9 @@ if (chooseEl) {
 
 let yaw = 0;        // 0 = camera at +Z side of player, looking -Z
 let pitch = 0.45;   // tilt down from horizontal (radians)
-const camDist = 10;
+let camDist = 10;   // scroll wheel zooms between CAM_DIST_MIN/MAX
+const CAM_DIST_MIN = 3;
+const CAM_DIST_MAX = 15;
 const camTargetHeight = 1.2;
 
 // Hoisted so the chat module (declared below) can flip it and the
@@ -863,16 +867,29 @@ document.addEventListener('mousemove', (e) => {
   yaw -= e.movementX * 0.0028;
   // Mouse down should tilt view down: camera rises, so pitch grows.
   pitch += e.movementY * 0.0028;
-  pitch = Math.max(0.08, Math.min(1.1, pitch));
+  // Allow negative pitch so the camera can dip under the target and
+  // tilt up into the sky; updateCamera keeps it above the ground.
+  pitch = Math.max(-0.45, Math.min(1.15, pitch));
 });
+
+canvas.addEventListener('wheel', (e) => {
+  if (!traveler || chatOpen) return;
+  e.preventDefault();
+  camDist += Math.sign(e.deltaY) * 0.7;
+  camDist = Math.max(CAM_DIST_MIN, Math.min(CAM_DIST_MAX, camDist));
+}, { passive: false });
 
 function updateCamera() {
   const tx = player.position.x;
   const ty = camTargetHeight;
   const tz = player.position.z;
   const cx = tx + Math.sin(yaw) * Math.cos(pitch) * camDist;
-  const cy = ty + Math.sin(pitch) * camDist;
+  let   cy = ty + Math.sin(pitch) * camDist;
   const cz = tz + Math.cos(yaw) * Math.cos(pitch) * camDist;
+  // Don't let the camera sink below the floor — when pitch is small or
+  // negative the cam effectively skims the ground, giving an upward
+  // look at the character with lots of sky overhead.
+  if (cy < 0.35) cy = 0.35;
   camera.position.set(cx, cy, cz);
   camera.lookAt(tx, ty, tz);
 }
