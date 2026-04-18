@@ -241,9 +241,11 @@ function buildRainAudio() {
   rainSource.loop = true;
 
   const filter = sfxCtx.createBiquadFilter();
-  filter.type = 'bandpass';
-  filter.frequency.value = 1600;
-  filter.Q.value = 0.55;
+  // Lowpass instead of bandpass — drops the bright hiss entirely so
+  // what's left reads as muffled, low rain rather than a shower head.
+  filter.type = 'lowpass';
+  filter.frequency.value = 520;
+  filter.Q.value = 0.5;
 
   rainGain = sfxCtx.createGain();
   rainGain.gain.value = 0;
@@ -258,7 +260,7 @@ function setRainLevel(mix) {
   if (!rainGain || !sfxCtx) return;
   // Quadratic so the hiss only really comes up when we're firmly in
   // the rain state, and fades away early on the way back to snow.
-  const target = Math.max(0, Math.min(1, mix)) ** 1.6 * 0.09;
+  const target = Math.max(0, Math.min(1, mix)) ** 1.6 * 0.05;
   rainGain.gain.setTargetAtTime(target, sfxCtx.currentTime, 0.6);
 }
 
