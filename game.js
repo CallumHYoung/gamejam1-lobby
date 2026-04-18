@@ -44,7 +44,7 @@ const audioVolumeEl  = document.getElementById('audio-volume');
 let bgmStarted = false;
 
 function loadAudioPrefs() {
-  let volume = 0.5;
+  let volume = 0.32;
   let muted = false;
   try {
     const savedVol = localStorage.getItem(AUDIO_VOL_KEY);
@@ -114,8 +114,8 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0xcfd8e3);
-scene.fog = new THREE.Fog(0xcfd8e3, 30, 72);
+scene.background = new THREE.Color(0x070a18);
+scene.fog = new THREE.Fog(0x070a18, 28, 68);
 
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 200);
 
@@ -129,10 +129,11 @@ addEventListener('resize', () => {
 // Lighting
 // ------------------------------------------------------------------
 
-scene.add(new THREE.HemisphereLight(0xffeecc, 0x647ea0, 1.0));
-const sun = new THREE.DirectionalLight(0xfff1cf, 0.85);
-sun.position.set(12, 22, 8);
-scene.add(sun);
+// Moonlit night — cool sky fill, dim top-down moonlight.
+scene.add(new THREE.HemisphereLight(0x6a88b8, 0x0a1020, 0.28));
+const moonLight = new THREE.DirectionalLight(0xcdd6ef, 0.35);
+moonLight.position.set(-18, 26, -14);
+scene.add(moonLight);
 
 // ------------------------------------------------------------------
 // Ground + rings + center lantern
@@ -140,7 +141,7 @@ scene.add(sun);
 
 const floor = new THREE.Mesh(
   new THREE.CircleGeometry(32, 72),
-  new THREE.MeshStandardMaterial({ color: 0xe9e2cc, roughness: 0.95 }),
+  new THREE.MeshStandardMaterial({ color: 0xdbe2ef, roughness: 0.92 }),
 );
 floor.rotation.x = -Math.PI / 2;
 scene.add(floor);
@@ -194,6 +195,156 @@ scene.add(lantern);
 const lanternLight = new THREE.PointLight(0xffd494, 1.2, 10, 2);
 lanternLight.position.y = 1.55;
 scene.add(lanternLight);
+
+// ------------------------------------------------------------------
+// Night sky — radial glow texture, full moon + halo, star field
+// ------------------------------------------------------------------
+
+function makeRadialGlowTexture() {
+  const size = 128;
+  const cvs = document.createElement('canvas');
+  cvs.width = cvs.height = size;
+  const ctx = cvs.getContext('2d');
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.35, 'rgba(255,255,255,0.45)');
+  g.addColorStop(1.0, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.needsUpdate = true;
+  return tex;
+}
+const glowTex = makeRadialGlowTexture();
+
+// Full moon sits off to one side of the sky; halo fakes a soft bloom.
+const moonPos = new THREE.Vector3(-28, 32, -42);
+const moon = new THREE.Mesh(
+  new THREE.CircleGeometry(2.6, 48),
+  new THREE.MeshBasicMaterial({ color: 0xfff4d6, fog: false }),
+);
+moon.position.copy(moonPos);
+moon.lookAt(0, 0, 0);
+scene.add(moon);
+
+const moonHalo = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex,
+  color: 0xffe8c8,
+  transparent: true,
+  opacity: 0.45,
+  depthWrite: false,
+  fog: false,
+}));
+moonHalo.scale.set(11, 11, 1);
+moonHalo.position.copy(moonPos);
+scene.add(moonHalo);
+
+// Stars on a sky dome. Biased toward higher altitudes so nothing
+// pokes through the horizon line.
+const STAR_COUNT = 420;
+const starPositions = new Float32Array(STAR_COUNT * 3);
+for (let i = 0; i < STAR_COUNT; i++) {
+  const theta = Math.random() * Math.PI * 2;
+  const alt = 0.12 + Math.random() * 0.82;        // fraction of pi/2
+  const phi = alt * (Math.PI / 2);
+  const r = 90 + Math.random() * 10;
+  starPositions[i * 3]     = Math.cos(phi) * Math.cos(theta) * r;
+  starPositions[i * 3 + 1] = Math.sin(phi) * r;
+  starPositions[i * 3 + 2] = Math.cos(phi) * Math.sin(theta) * r;
+}
+const starGeom = new THREE.BufferGeometry();
+starGeom.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
+const stars = new THREE.Points(starGeom, new THREE.PointsMaterial({
+  color: 0xffffff,
+  size: 0.55,
+  sizeAttenuation: true,
+  transparent: true,
+  opacity: 0.9,
+  depthWrite: false,
+  fog: false,
+}));
+scene.add(stars);
+
+// ------------------------------------------------------------------
+// Street lamps — ring of dim warm posts around the hub
+// ------------------------------------------------------------------
+
+const LAMP_COUNT = 8;
+const LAMP_R = 17;
+const lampHeads = [];
+for (let i = 0; i < LAMP_COUNT; i++) {
+  const angle = (i / LAMP_COUNT) * Math.PI * 2 + Math.PI / LAMP_COUNT;
+  const x = Math.cos(angle) * LAMP_R;
+  const z = Math.sin(angle) * LAMP_R;
+
+  const post = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.07, 0.1, 3.4, 12),
+    new THREE.MeshStandardMaterial({ color: 0x1f2430, roughness: 0.7, metalness: 0.3 }),
+  );
+  post.position.set(x, 1.7, z);
+  scene.add(post);
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.19, 16, 12),
+    new THREE.MeshStandardMaterial({
+      color: 0xffd89a,
+      emissive: 0xffb060,
+      emissiveIntensity: 0.75,
+      roughness: 0.4,
+    }),
+  );
+  head.position.set(x, 3.4, z);
+  scene.add(head);
+  lampHeads.push(head);
+
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex,
+    color: 0xffc680,
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false,
+  }));
+  halo.scale.set(1.4, 1.4, 1);
+  halo.position.set(x, 3.4, z);
+  scene.add(halo);
+
+  // Dim, short-range — enough to pool light at each lamp without
+  // washing out the moonlit darkness of the hub.
+  const light = new THREE.PointLight(0xffb070, 0.55, 7, 2);
+  light.position.set(x, 3.3, z);
+  scene.add(light);
+}
+
+// ------------------------------------------------------------------
+// Snow — large Points cloud drifting down over the hub
+// ------------------------------------------------------------------
+
+const SNOW_COUNT = 320;
+const SNOW_AREA = 60;
+const SNOW_TOP = 18;
+const snowPositions = new Float32Array(SNOW_COUNT * 3);
+const snowVel = new Float32Array(SNOW_COUNT * 3);
+const snowSway = new Float32Array(SNOW_COUNT); // phase offset per flake
+for (let i = 0; i < SNOW_COUNT; i++) {
+  snowPositions[i * 3]     = (Math.random() - 0.5) * SNOW_AREA;
+  snowPositions[i * 3 + 1] = Math.random() * SNOW_TOP;
+  snowPositions[i * 3 + 2] = (Math.random() - 0.5) * SNOW_AREA;
+  snowVel[i * 3]     = (Math.random() - 0.5) * 0.25;
+  snowVel[i * 3 + 1] = -(0.55 + Math.random() * 0.55);
+  snowVel[i * 3 + 2] = (Math.random() - 0.5) * 0.25;
+  snowSway[i] = Math.random() * Math.PI * 2;
+}
+const snowGeom = new THREE.BufferGeometry();
+snowGeom.setAttribute('position', new THREE.Float32BufferAttribute(snowPositions, 3));
+const snow = new THREE.Points(snowGeom, new THREE.PointsMaterial({
+  color: 0xffffff,
+  size: 0.13,
+  sizeAttenuation: true,
+  transparent: true,
+  opacity: 0.85,
+  depthWrite: false,
+}));
+scene.add(snow);
 
 // ------------------------------------------------------------------
 // Text label helper
@@ -269,7 +420,7 @@ function makePortal(game, angle) {
     new THREE.MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: 0.6,
+      emissiveIntensity: 0.9,
       metalness: 0.2,
       roughness: 0.4,
     }),
@@ -289,7 +440,18 @@ function makePortal(game, angle) {
   disc.position.y = 1.9;
   group.add(disc);
 
-  const light = new THREE.PointLight(color, 0.55, 6, 2);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex,
+    color,
+    transparent: true,
+    opacity: 0.32,
+    depthWrite: false,
+  }));
+  halo.scale.set(4.2, 4.2, 1);
+  halo.position.y = 1.9;
+  group.add(halo);
+
+  const light = new THREE.PointLight(color, 0.85, 8, 2);
   light.position.y = 1.9;
   group.add(light);
 
@@ -353,7 +515,18 @@ if (incoming.ref) {
   disc.position.y = 1.9;
   group.add(disc);
 
-  const light = new THREE.PointLight(color, 0.7, 6, 2);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex,
+    color,
+    transparent: true,
+    opacity: 0.36,
+    depthWrite: false,
+  }));
+  halo.scale.set(4.2, 4.2, 1);
+  halo.position.y = 1.9;
+  group.add(halo);
+
+  const light = new THREE.PointLight(color, 1.0, 8, 2);
   light.position.y = 1.9;
   group.add(light);
 
@@ -1182,6 +1355,23 @@ function loop(now) {
       m.position.z = (Math.random() - 0.5) * 40;
     }
   }
+
+  // Snow — fall straight-ish with a gentle per-flake sway, respawn at
+  // the top when they hit the ground.
+  const snowArr = snowGeom.attributes.position.array;
+  for (let i = 0; i < SNOW_COUNT; i++) {
+    const ix = i * 3;
+    const sway = Math.sin(t * 0.8 + snowSway[i]) * 0.15;
+    snowArr[ix]     += (snowVel[ix]     + sway) * dt;
+    snowArr[ix + 1] +=  snowVel[ix + 1]         * dt;
+    snowArr[ix + 2] +=  snowVel[ix + 2]         * dt;
+    if (snowArr[ix + 1] < 0.05) {
+      snowArr[ix]     = (Math.random() - 0.5) * SNOW_AREA;
+      snowArr[ix + 1] = SNOW_TOP + Math.random() * 3;
+      snowArr[ix + 2] = (Math.random() - 0.5) * SNOW_AREA;
+    }
+  }
+  snowGeom.attributes.position.needsUpdate = true;
 
   for (const g of portals) {
     g.userData.torus.rotation.z += dt * 0.9;
