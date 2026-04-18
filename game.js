@@ -171,6 +171,12 @@ let sfxHumBus = null;
 let noiseBuffer = null;
 const portalHums = []; // { obj3d, gainNode, maxGain }
 
+// Rain ambience — pink noise through a bandpass, looped. A single
+// gain node is crossfaded by weatherMix so it only becomes audible
+// when the scene transitions into rain.
+let rainSource = null;
+let rainGain = null;
+
 function ensureSfx() {
   if (sfxCtx) {
     if (sfxCtx.state === 'suspended') sfxCtx.resume().catch(() => {});
@@ -206,7 +212,54 @@ function ensureSfx() {
   }
 
   buildPortalHums();
+  buildRainAudio();
   return sfxCtx;
+}
+
+// Pink noise (Paul Kellet approximation) through a wide bandpass gives
+// a passable rain hush. The source is one long buffer on loop so the
+// seam is continuous by construction — no need for crossfade tricks.
+function buildRainAudio() {
+  if (!sfxCtx || rainSource) return;
+  const len = Math.floor(sfxCtx.sampleRate * 6);
+  const buf = sfxCtx.createBuffer(1, len, sfxCtx.sampleRate);
+  const out = buf.getChannelData(0);
+  let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    b0 = 0.99886 * b0 + w * 0.0555179;
+    b1 = 0.99332 * b1 + w * 0.0750759;
+    b2 = 0.96900 * b2 + w * 0.1538520;
+    b3 = 0.86650 * b3 + w * 0.3104856;
+    b4 = 0.55000 * b4 + w * 0.5329522;
+    b5 = -0.7616 * b5 - w * 0.0168980;
+    out[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11;
+    b6 = w * 0.115926;
+  }
+  rainSource = sfxCtx.createBufferSource();
+  rainSource.buffer = buf;
+  rainSource.loop = true;
+
+  const filter = sfxCtx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = 1600;
+  filter.Q.value = 0.55;
+
+  rainGain = sfxCtx.createGain();
+  rainGain.gain.value = 0;
+
+  rainSource.connect(filter);
+  filter.connect(rainGain);
+  rainGain.connect(sfxMaster);
+  rainSource.start();
+}
+
+function setRainLevel(mix) {
+  if (!rainGain || !sfxCtx) return;
+  // Quadratic so the hiss only really comes up when we're firmly in
+  // the rain state, and fades away early on the way back to snow.
+  const target = Math.max(0, Math.min(1, mix)) ** 1.6 * 0.28;
+  rainGain.gain.setTargetAtTime(target, sfxCtx.currentTime, 0.6);
 }
 
 function setSfxMuted(muted) {
@@ -590,26 +643,36 @@ const snowMat = new THREE.ShaderMaterial({
     uPixelScale: { value: innerHeight * renderer.getPixelRatio() * 0.5 },
     uSize: { value: 0.22 },
     uTex: { value: glowTex },
+    // 0 = full snow, 1 = full rain. Driven on a slow lerp from JS so
+    // weather transitions smoothly crossfade instead of snapping.
+    uWeather: { value: 0 },
   },
   vertexShader: /* glsl */ `
     uniform float uTime;
     uniform float uTop;
     uniform float uSize;
     uniform float uPixelScale;
+    uniform float uWeather;
     attribute vec3 aData;
     varying float vAlpha;
     void main() {
       float fall = aData.x;
       float swayP = aData.y;
       float driftP = aData.z;
+      // Rain falls much faster and (nearly) straight down. Size shrinks
+      // too so the points read as streaks against the dark sky.
+      float fallMul = mix(1.0, 2.8, uWeather);
+      float swayAmp = mix(0.25, 0.02, uWeather);
+      float driftAmp = mix(0.25, 0.02, uWeather);
+      float sizeMul = mix(1.0, 0.55, uWeather);
       // Wrap vertically via mod so flakes cycle from top back to top
       // without any JS-side respawn logic.
-      float y = mod(position.y - fall * uTime, uTop);
-      float x = position.x + sin(uTime * 0.8 + swayP) * 0.25;
-      float z = position.z + cos(uTime * 0.55 + driftP) * 0.25;
+      float y = mod(position.y - fall * fallMul * uTime, uTop);
+      float x = position.x + sin(uTime * 0.8 + swayP) * swayAmp;
+      float z = position.z + cos(uTime * 0.55 + driftP) * driftAmp;
       vec4 mv = modelViewMatrix * vec4(x, y, z, 1.0);
       gl_Position = projectionMatrix * mv;
-      gl_PointSize = uSize * uPixelScale / max(0.1, -mv.z);
+      gl_PointSize = uSize * sizeMul * uPixelScale / max(0.1, -mv.z);
       // Fade flakes in near the top (fresh respawn) and out near the
       // ground, so the modulo wrap isn't visible as a pop.
       float topFade = 1.0 - smoothstep(uTop - 2.5, uTop, y);
@@ -619,10 +682,13 @@ const snowMat = new THREE.ShaderMaterial({
   `,
   fragmentShader: /* glsl */ `
     uniform sampler2D uTex;
+    uniform float uWeather;
     varying float vAlpha;
     void main() {
       vec4 tex = texture2D(uTex, gl_PointCoord);
-      gl_FragColor = vec4(1.0, 1.0, 1.0, tex.a * vAlpha * 0.85);
+      vec3 col = mix(vec3(1.0), vec3(0.78, 0.86, 0.98), uWeather);
+      float baseAlpha = mix(0.85, 0.7, uWeather);
+      gl_FragColor = vec4(col, tex.a * vAlpha * baseAlpha);
     }
   `,
   transparent: true,
@@ -639,6 +705,34 @@ snowGeom.boundingSphere = new THREE.Sphere(
   Math.sqrt(SNOW_AREA * SNOW_AREA * 0.5 + SNOW_TOP * SNOW_TOP * 0.25),
 );
 scene.add(snow);
+
+// ------------------------------------------------------------------
+// Weather state — most of the time it's snow; every so often the
+// lobby shifts into rain for a stretch before going back. weatherMix
+// is slewed toward weatherTarget on a slow lerp so transitions are
+// gentle (a few seconds to fully cross over).
+// ------------------------------------------------------------------
+
+let weatherMix = 0;                       // 0 = snow, 1 = rain
+let weatherTarget = 0;
+let weatherSwitchAt = 45 + Math.random() * 30; // first switch at 45–75s
+const WEATHER_FADE_RATE = 0.35;
+
+function tickWeather(tNow, dt) {
+  if (tNow >= weatherSwitchAt) {
+    if (weatherTarget === 0) {
+      weatherTarget = 1;
+      weatherSwitchAt = tNow + 45 + Math.random() * 45;   // rain 45–90s
+    } else {
+      weatherTarget = 0;
+      weatherSwitchAt = tNow + 90 + Math.random() * 120;  // snow 90–210s
+    }
+  }
+  const k = Math.min(1, dt * WEATHER_FADE_RATE);
+  weatherMix += (weatherTarget - weatherMix) * k;
+  snowMat.uniforms.uWeather.value = weatherMix;
+  setRainLevel(weatherMix);
+}
 
 // ------------------------------------------------------------------
 // Text label helper
@@ -1147,9 +1241,13 @@ if (chooseEl) {
 let yaw = 0;        // 0 = camera at +Z side of player, looking -Z
 let pitch = 0.45;   // tilt down from horizontal (radians)
 let camDist = 10;   // scroll wheel zooms between CAM_DIST_MIN/MAX
-const CAM_DIST_MIN = 3;
+// CAM_DIST_MIN drops below the first-person threshold so the user can
+// actually scroll into FP rather than the clamp stopping them short.
+const CAM_DIST_MIN = 0.6;
 const CAM_DIST_MAX = 15;
+const CAM_FP_THRESHOLD = 2.0; // below this, switch to first-person
 const camTargetHeight = 1.2;
+let firstPerson = false;
 
 // Hoisted so the chat module (declared below) can flip it and the
 // keyboard / click handlers here can check it without re-wiring.
@@ -1180,9 +1278,40 @@ canvas.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 function updateCamera() {
+  const wantFP = camDist < CAM_FP_THRESHOLD;
+  if (wantFP !== firstPerson) {
+    firstPerson = wantFP;
+    // Hide the character's visible bits in FP so the player isn't
+    // looking through their own head. Glow light stays on so nearby
+    // surfaces still react to the traveler's color.
+    const vis = !firstPerson;
+    character.body.visible = vis;
+    character.head.visible = vis;
+    character.eyeL.visible = vis;
+    character.eyeR.visible = vis;
+    character.armL.visible = vis;
+    character.armR.visible = vis;
+  }
+
   const tx = player.position.x;
-  const ty = camTargetHeight;
   const tz = player.position.z;
+
+  if (firstPerson) {
+    // Eye-height camera at the player's head, aimed along (yaw, pitch).
+    // Same forward-vector convention as the TP orbit so horizontal mouse
+    // swings feel continuous across the transition.
+    const ex = tx;
+    const ey = player.position.y + 1.3;
+    const ez = tz;
+    const fx = -Math.sin(yaw) * Math.cos(pitch);
+    const fy = -Math.sin(pitch);
+    const fz = -Math.cos(yaw) * Math.cos(pitch);
+    camera.position.set(ex, ey, ez);
+    camera.lookAt(ex + fx, ey + fy, ez + fz);
+    return;
+  }
+
+  const ty = camTargetHeight;
   const cx = tx + Math.sin(yaw) * Math.cos(pitch) * camDist;
   let   cy = ty + Math.sin(pitch) * camDist;
   const cz = tz + Math.cos(yaw) * Math.cos(pitch) * camDist;
@@ -1683,8 +1812,11 @@ function loop(now) {
     }
   }
 
-  // Snow — fall + sway + drift computed entirely in the vertex shader.
+  // Snow/rain — fall + sway + drift computed entirely in the vertex
+  // shader. tickWeather crossfades between snow and rain parameters
+  // and syncs the rain ambience level.
   snowMat.uniforms.uTime.value = t;
+  tickWeather(t, dt);
 
   for (const g of portals) {
     g.userData.torus.rotation.z += dt * 0.9;
