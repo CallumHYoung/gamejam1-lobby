@@ -92,6 +92,8 @@ if (audioToggleEl && bgmEl) {
     // The click itself is a valid gesture for autoplay, so kick the
     // track off now if it hasn't started yet.
     startBgm();
+    ensureSfx();
+    setSfxMuted(muted);
   });
 }
 
@@ -101,6 +103,158 @@ if (audioVolumeEl && bgmEl) {
     bgmEl.volume = v;
     try { localStorage.setItem(AUDIO_VOL_KEY, String(v)); } catch {}
   });
+}
+
+// ------------------------------------------------------------------
+// Lobby SFX — procedural Web Audio. Snow-crunch footsteps for the
+// local player and nearby peers, plus a soft portal hum whose gain
+// ramps with proximity. Lazy-initialized on the first user gesture
+// (browser autoplay policy) and muted alongside the BGM toggle.
+// ------------------------------------------------------------------
+
+let sfxCtx = null;
+let sfxMaster = null;
+let sfxCrunchBus = null;
+let sfxHumBus = null;
+let noiseBuffer = null;
+const portalHums = []; // { obj3d, gainNode, maxGain }
+
+function ensureSfx() {
+  if (sfxCtx) {
+    if (sfxCtx.state === 'suspended') sfxCtx.resume().catch(() => {});
+    return sfxCtx;
+  }
+  const Ctor = window.AudioContext || window.webkitAudioContext;
+  if (!Ctor) return null;
+  try { sfxCtx = new Ctor(); } catch { return null; }
+
+  sfxMaster = sfxCtx.createGain();
+  sfxMaster.gain.value = (bgmEl && bgmEl.muted) ? 0 : 1;
+  sfxMaster.connect(sfxCtx.destination);
+
+  sfxCrunchBus = sfxCtx.createGain();
+  sfxCrunchBus.gain.value = 0.55;
+  sfxCrunchBus.connect(sfxMaster);
+
+  sfxHumBus = sfxCtx.createGain();
+  sfxHumBus.gain.value = 0.4;
+  sfxHumBus.connect(sfxMaster);
+
+  // 0.25s of white noise — reused as the source for every footstep.
+  const len = Math.floor(sfxCtx.sampleRate * 0.25);
+  noiseBuffer = sfxCtx.createBuffer(1, len, sfxCtx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+
+  buildPortalHums();
+  return sfxCtx;
+}
+
+function setSfxMuted(muted) {
+  if (!sfxMaster || !sfxCtx) return;
+  sfxMaster.gain.setTargetAtTime(muted ? 0 : 1, sfxCtx.currentTime, 0.02);
+}
+
+// One short filtered-noise burst with a fast attack/decay envelope and
+// a downward filter sweep — the sweep gives it the "scrunch" bite.
+function playCrunch(volume = 1.0, pan = 0) {
+  if (!sfxCtx || !noiseBuffer) return;
+  const t = sfxCtx.currentTime;
+  const src = sfxCtx.createBufferSource();
+  src.buffer = noiseBuffer;
+  src.playbackRate.value = 0.85 + Math.random() * 0.3;
+
+  const filter = sfxCtx.createBiquadFilter();
+  filter.type = 'bandpass';
+  const fBase = 1600 + Math.random() * 900;
+  filter.frequency.setValueAtTime(fBase, t);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(200, fBase * 0.5), t + 0.11);
+  filter.Q.value = 0.7;
+
+  const gain = sfxCtx.createGain();
+  const peak = Math.max(0, Math.min(1, volume)) * 0.75;
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(peak, t + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.13);
+
+  src.connect(filter);
+  filter.connect(gain);
+  if (sfxCtx.createStereoPanner) {
+    const panner = sfxCtx.createStereoPanner();
+    panner.pan.value = Math.max(-1, Math.min(1, pan));
+    gain.connect(panner);
+    panner.connect(sfxCrunchBus);
+  } else {
+    gain.connect(sfxCrunchBus);
+  }
+  src.start(t);
+  src.stop(t + 0.2);
+}
+
+// Remote crunch: attenuate + pan based on listener (player + camera).
+function playCrunchAt(x, z) {
+  if (!sfxCtx) return;
+  const dx = x - player.position.x;
+  const dz = z - player.position.z;
+  const d = Math.hypot(dx, dz);
+  if (d > 18) return;
+  const falloff = 1 - Math.min(1, d / 18);
+  // Camera-right vector in world XZ; matches the movement basis.
+  const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+  const pan = d < 0.01 ? 0 : (dx * rx + dz * rz) / d;
+  playCrunch(0.8 * falloff * falloff, pan);
+}
+
+// Continuous drone per portal: two detuned saws through a breathing
+// low-pass. Gain is 0 until updatePortalHums() raises it with proximity.
+function buildPortalHums() {
+  if (!sfxCtx || portalHums.length) return;
+  const make = (obj3d, freq) => {
+    const osc1 = sfxCtx.createOscillator();
+    const osc2 = sfxCtx.createOscillator();
+    osc1.type = 'sawtooth';
+    osc2.type = 'sawtooth';
+    osc1.frequency.value = freq;
+    osc2.frequency.value = freq * 1.005;
+    const filter = sfxCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 640;
+    filter.Q.value = 3;
+    const lfo = sfxCtx.createOscillator();
+    const lfoGain = sfxCtx.createGain();
+    lfo.frequency.value = 0.35;
+    lfoGain.gain.value = 140;
+    lfo.connect(lfoGain);
+    lfoGain.connect(filter.frequency);
+    const gain = sfxCtx.createGain();
+    gain.gain.value = 0;
+    osc1.connect(filter);
+    osc2.connect(filter);
+    filter.connect(gain);
+    gain.connect(sfxHumBus);
+    osc1.start();
+    osc2.start();
+    lfo.start();
+    portalHums.push({ obj3d, gainNode: gain, maxGain: 0.5 });
+  };
+  portals.forEach((p, i) => make(p, 92 + (i % 3) * 7));
+  if (returnPortal) make(returnPortal.group, 74);
+}
+
+function updatePortalHums() {
+  if (!sfxCtx || !portalHums.length) return;
+  const now = sfxCtx.currentTime;
+  const px = player.position.x, pz = player.position.z;
+  const NEAR = 2.5, FAR = 9;
+  for (const h of portalHums) {
+    const o = h.obj3d;
+    if (!o) continue;
+    const dx = o.position.x - px;
+    const dz = o.position.z - pz;
+    const d = Math.hypot(dx, dz);
+    const k = 1 - Math.max(0, Math.min(1, (d - NEAR) / (FAR - NEAR)));
+    h.gainNode.gain.setTargetAtTime(h.maxGain * k * k, now, 0.1);
+  }
 }
 
 // ------------------------------------------------------------------
@@ -883,6 +1037,7 @@ function pickTraveler(choice) {
   if (travelerEl) travelerEl.textContent = `traveler: ${choice.name}`;
   // Kick the BGM off the first user gesture we get.
   startBgm();
+  ensureSfx();
   if (chooseEl) {
     chooseEl.classList.add('done');
     setTimeout(() => chooseEl.remove(), 500);
@@ -1415,6 +1570,12 @@ const playerVel = { x: 0, z: 0 };
 let jumpY = 0;
 let jumpVy = 0;
 
+// Footstep cadence — counts down in seconds scaled by movement speed,
+// so faster travelers crunch more often. A small random jitter per
+// step keeps it from sounding metronomic.
+let playerStepTimer = 0;
+const STEP_INTERVAL = 0.34;
+
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
@@ -1452,13 +1613,33 @@ function loop(now) {
   for (const peer of peers.values()) {
     if (!peer.state || !peer.group) continue;
     const k = Math.min(1, dt * 12);
+    const prevRX = peer.state._prevRX ?? peer.state.renderX;
+    const prevRZ = peer.state._prevRZ ?? peer.state.renderZ;
     peer.state.renderX += (peer.state.x - peer.state.renderX) * k;
     peer.state.renderY += (peer.state.y - peer.state.renderY) * k;
     peer.state.renderZ += (peer.state.z - peer.state.renderZ) * k;
     peer.group.position.set(peer.state.renderX, peer.state.renderY, peer.state.renderZ);
     peer.group.rotation.y = peer.state.yaw;
     clearExpiredBubble(peer.group);
+
+    // Peer footstep cadence from render-space velocity. playCrunchAt
+    // no-ops when the peer is too far to be audible, so this stays
+    // cheap even with many peers.
+    const pdx = peer.state.renderX - prevRX;
+    const pdz = peer.state.renderZ - prevRZ;
+    const pSpeed = Math.hypot(pdx, pdz) / Math.max(0.0001, dt);
+    peer.state._prevRX = peer.state.renderX;
+    peer.state._prevRZ = peer.state.renderZ;
+    if (pSpeed > 0.5 && (peer.state.renderY ?? 0) <= 0.3) {
+      peer.state._stepTimer = (peer.state._stepTimer ?? 0) - dt * (pSpeed / 4.5);
+      if (peer.state._stepTimer <= 0) {
+        peer.state._stepTimer = STEP_INTERVAL + (Math.random() - 0.5) * 0.06;
+        playCrunchAt(peer.state.renderX, peer.state.renderZ);
+      }
+    }
   }
+
+  updatePortalHums();
   clearExpiredBubble(player);
 
   // Gate input on traveler pick
@@ -1500,6 +1681,20 @@ function loop(now) {
 
   const speedSq = playerVel.x * playerVel.x + playerVel.z * playerVel.z;
   const walking = speedSq > 0.25; // ~0.5 units/s threshold
+
+  if (walking) {
+    const speed = Math.sqrt(speedSq);
+    playerStepTimer -= dt * (speed / 4.5);
+    if (playerStepTimer <= 0) {
+      playerStepTimer = STEP_INTERVAL + (Math.random() - 0.5) * 0.06;
+      // Grounded-only: silence the crunch while airborne.
+      if (jumpY <= 0.05) playCrunch(0.9, 0);
+    }
+  } else if (playerStepTimer > STEP_INTERVAL * 0.5) {
+    // Shrink the accumulator when idle so the first step on resumption
+    // hits promptly rather than waiting for a leftover long interval.
+    playerStepTimer = STEP_INTERVAL * 0.5;
+  }
 
   // Face movement direction (character's local front is -Z).
   if (walking) {
