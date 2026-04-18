@@ -23,6 +23,12 @@
 
 <audio id="bgm" loop preload="metadata" src="Forked%20Reflections.mp3"></audio>
 
+<div id="perf" hidden>
+  <span class="row"><span class="label">fps</span><span id="perf-fps">—</span></span>
+  <span class="row"><span class="label">worst</span><span id="perf-worst">—</span></span>
+  <span class="row"><span class="label">spikes</span><span id="perf-spikes">—</span></span>
+</div>
+
 <div id="audio-controls" aria-label="music controls">
   <button id="audio-toggle" type="button" aria-pressed="false">mute</button>
   <input id="audio-volume" type="range" min="0" max="100" value="32" aria-label="music volume" />

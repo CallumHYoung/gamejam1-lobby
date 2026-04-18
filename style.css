@@ -69,6 +69,33 @@ html, body {
 
 /* -------- music controls -------- */
 
+#perf {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 16;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  color: #1b2234;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  pointer-events: none;
+  line-height: 1.25;
+}
+#perf .row { display: flex; justify-content: space-between; gap: 0.8rem; }
+#perf .label { opacity: 0.55; }
+#perf.spike #perf-worst { color: #b13b3b; font-weight: 700; }
+
+/* Perf overlay takes the top-right slot when enabled. */
+#perf:not([hidden]) ~ #audio-controls { top: 4.9rem; }
+
 #audio-controls {
   position: fixed;
   top: 1rem;

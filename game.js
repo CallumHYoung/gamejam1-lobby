@@ -106,6 +106,58 @@ if (audioVolumeEl && bgmEl) {
 }
 
 // ------------------------------------------------------------------
+// Perf overlay — enabled with ?perf=1. Tracks a 1s rolling window of
+// frame times and flags any frame over SPIKE_MS to the console with
+// a timestamp so we can correlate hitches with gameplay events.
+// ------------------------------------------------------------------
+
+const perfEnabled = (() => {
+  try { return new URLSearchParams(location.search).get('perf') === '1'; }
+  catch { return false; }
+})();
+const perfEl       = document.getElementById('perf');
+const perfFpsEl    = document.getElementById('perf-fps');
+const perfWorstEl  = document.getElementById('perf-worst');
+const perfSpikesEl = document.getElementById('perf-spikes');
+const perfSamples = []; // { t: ms-since-epoch, dt: ms }
+const PERF_WINDOW_MS = 1000;
+const PERF_SPIKE_MS  = 40;
+let perfSpikeCount = 0;
+let perfLastDomUpdate = 0;
+let perfSpikeFlashUntil = 0;
+
+if (perfEnabled && perfEl) perfEl.hidden = false;
+
+function perfRecord(now, dtMs) {
+  if (!perfEnabled) return;
+  perfSamples.push({ t: now, dt: dtMs });
+  // Drop anything outside the 1s window.
+  while (perfSamples.length && now - perfSamples[0].t > PERF_WINDOW_MS) {
+    perfSamples.shift();
+  }
+  if (dtMs > PERF_SPIKE_MS) {
+    perfSpikeCount += 1;
+    perfSpikeFlashUntil = now + 800;
+    // Snapshot of gameplay context at the spike — makes it obvious
+    // whether it correlates with peers joining, portals spawning, etc.
+    console.warn(
+      `[perf] frame spike ${dtMs.toFixed(1)}ms @ t=${(now / 1000).toFixed(2)}s ` +
+      `peers=${peers.size} particles=${particles.filter((p) => p.userData.alive).length}`,
+    );
+  }
+  if (now - perfLastDomUpdate > 200 && perfSamples.length) {
+    perfLastDomUpdate = now;
+    let sum = 0, max = 0;
+    for (const s of perfSamples) { sum += s.dt; if (s.dt > max) max = s.dt; }
+    const avg = sum / perfSamples.length;
+    if (perfFpsEl)    perfFpsEl.textContent    = (1000 / avg).toFixed(0);
+    if (perfWorstEl)  perfWorstEl.textContent  = `${max.toFixed(0)}ms`;
+    if (perfSpikesEl) perfSpikesEl.textContent = String(perfSpikeCount);
+    if (perfEl) perfEl.classList.toggle('spike', now < perfSpikeFlashUntil);
+  }
+}
+
+// ------------------------------------------------------------------
 // Lobby SFX — procedural Web Audio. Snow-crunch footsteps for the
 // local player and nearby peers, plus a soft portal hum whose gain
 // ramps with proximity. Lazy-initialized on the first user gesture
@@ -1608,9 +1660,13 @@ let playerStepTimer = 0;
 const STEP_INTERVAL = 0.58;
 
 function loop(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
+  // Raw (uncapped) frame time for the perf overlay, so we see actual
+  // hitches rather than the clamped physics-step version.
+  const rawDtMs = now - last;
+  const dt = Math.min(0.05, rawDtMs / 1000);
   last = now;
   t += dt;
+  perfRecord(now, rawDtMs);
 
   // Ambient animations always run
   lantern.position.y = 1.55 + Math.sin(t * 1.5) * 0.08;
