@@ -342,6 +342,76 @@ for (let i = 0; i < 45; i++) {
 }
 
 // ------------------------------------------------------------------
+// Traveler particle pool — one shared pool, reassigned when a particle
+// dies. Spawn rate, color, size, lifetime and launch velocity all come
+// from the active traveler config, giving each pick a distinct trail.
+// ------------------------------------------------------------------
+
+const PARTICLE_COUNT = 70;
+const particles = [];
+for (let i = 0; i < PARTICLE_COUNT; i++) {
+  const mat = new THREE.SpriteMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(0.1, 0.1, 1);
+  sprite.visible = false;
+  sprite.userData = { alive: false };
+  scene.add(sprite);
+  particles.push(sprite);
+}
+
+function spawnParticle() {
+  if (!traveler) return;
+  const p = particles.find((sp) => !sp.userData.alive);
+  if (!p) return;
+  const cfg = traveler.particle;
+
+  p.userData.alive = true;
+  p.userData.age = 0;
+  p.userData.life = cfg.life;
+
+  const spread = cfg.behavior === 'burst' ? 0.4 : 0.28;
+  p.position.set(
+    player.position.x + (Math.random() - 0.5) * spread,
+    player.position.y + 0.4 + Math.random() * 0.5,
+    player.position.z + (Math.random() - 0.5) * spread,
+  );
+
+  if (cfg.behavior === 'burst') {
+    // Spark: outward cone with gravity, like a small firework.
+    const a = Math.random() * Math.PI * 2;
+    const r = 1.5 + Math.random() * 1.5;
+    p.userData.vx = Math.cos(a) * r;
+    p.userData.vy = 1.8 + Math.random() * 1.8;
+    p.userData.vz = Math.sin(a) * r;
+    p.userData.gy = -5.5;
+  } else if (cfg.behavior === 'rise') {
+    // Drift: gentle plumes rising with slight sway.
+    p.userData.vx = (Math.random() - 0.5) * 0.4;
+    p.userData.vy = 0.6 + Math.random() * 0.4;
+    p.userData.vz = (Math.random() - 0.5) * 0.4;
+    p.userData.gy = 0;
+  } else {
+    // Wander: slow upward drift, petal-like.
+    p.userData.vx = (Math.random() - 0.5) * 0.25;
+    p.userData.vy = 0.2 + Math.random() * 0.25;
+    p.userData.vz = (Math.random() - 0.5) * 0.25;
+    p.userData.gy = 0.08;
+  }
+
+  p.scale.set(cfg.size, cfg.size, 1);
+  p.material.color.setHex(cfg.color);
+  p.material.opacity = 0.9;
+  p.visible = true;
+}
+
+let particleAccum = 0;
+
+// ------------------------------------------------------------------
 // Character — capsule body + sphere head + eyes + tiny arms.
 // Built facing -Z (three.js convention), so rotation.y = 0 means the
 // character looks along world -Z.
@@ -350,7 +420,12 @@ for (let i = 0; i < 45; i++) {
 function buildCharacter(colorHex) {
   const group = new THREE.Group();
   const color = new THREE.Color('#' + colorHex);
-  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.55 });
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color,
+    emissive: color,
+    emissiveIntensity: 0,
+    roughness: 0.5,
+  });
   const skinMat = new THREE.MeshStandardMaterial({ color: 0xfff5dc, roughness: 0.7 });
   const eyeMat  = new THREE.MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.4 });
 
@@ -378,7 +453,12 @@ function buildCharacter(colorHex) {
   armR.rotation.z = -0.22;
   group.add(armR);
 
-  return { group, bodyMat, body, head, armL, armR, eyeL, eyeR };
+  // Glow light — intensity driven by the selected traveler.
+  const glowLight = new THREE.PointLight(color, 0, 5, 2);
+  glowLight.position.y = 0.8;
+  group.add(glowLight);
+
+  return { group, bodyMat, body, head, armL, armR, eyeL, eyeR, glowLight };
 }
 
 const character = buildCharacter(incoming.color);
@@ -387,8 +467,13 @@ const spawnZ = incoming.fromPortal && incoming.ref ? 13 : 8;
 player.position.set(0, 0, spawnZ);
 scene.add(player);
 
-function setCharacterColor(hex) {
-  character.bodyMat.color.set('#' + hex);
+function applyTravelerStyle(choice) {
+  const color = new THREE.Color('#' + choice.hex);
+  character.bodyMat.color.copy(color);
+  character.bodyMat.emissive.copy(color);
+  character.bodyMat.emissiveIntensity = choice.emissive;
+  character.glowLight.color.copy(color);
+  character.glowLight.intensity = choice.glow;
 }
 
 // ------------------------------------------------------------------
@@ -396,10 +481,27 @@ function setCharacterColor(hex) {
 // via a portal we skip the picker and reuse the incoming state.
 // ------------------------------------------------------------------
 
+// Each traveler maps to a distinct movement feel, glow strength, and
+// particle style. Kept in one place so adding a fourth is trivial.
 const CHOICES = {
-  spark:  { key: 'spark',  hex: 'e8b64c', name: 'Spark',  speed: 6,   desc: 'quick on their feet' },
-  drift:  { key: 'drift',  hex: '7fb9ae', name: 'Drift',  speed: 5,   desc: 'steady, curious' },
-  wander: { key: 'wander', hex: 'a892c6', name: 'Wander', speed: 4.2, desc: 'takes their time' },
+  spark: {
+    key: 'spark', hex: 'e8b64c', name: 'Spark', desc: 'quick on their feet',
+    speed: 6.5, accel: 35, bobFreq: 12, bobAmp: 0.08, hover: 0,
+    glow: 1.3, emissive: 0.55,
+    particle: { color: 0xffd870, size: 0.1, life: 0.65, rate: 34, behavior: 'burst' },
+  },
+  drift: {
+    key: 'drift', hex: '7fb9ae', name: 'Drift', desc: 'steady, curious',
+    speed: 5, accel: 18, bobFreq: 10, bobAmp: 0.06, hover: 0,
+    glow: 0.75, emissive: 0.35,
+    particle: { color: 0x8fd6c8, size: 0.14, life: 1.8, rate: 11, behavior: 'rise' },
+  },
+  wander: {
+    key: 'wander', hex: 'a892c6', name: 'Wander', desc: 'takes their time',
+    speed: 4.2, accel: 8, bobFreq: 4, bobAmp: 0.1, hover: 0.18,
+    glow: 0.55, emissive: 0.3,
+    particle: { color: 0xc3b3e0, size: 0.2, life: 2.6, rate: 6, behavior: 'float' },
+  },
 };
 
 let traveler = null;
@@ -408,7 +510,7 @@ const travelerEl = document.getElementById('traveler');
 
 function pickTraveler(choice) {
   traveler = choice;
-  setCharacterColor(choice.hex);
+  applyTravelerStyle(choice);
   if (travelerEl) travelerEl.textContent = `traveler: ${choice.name}`;
   if (chooseEl) {
     chooseEl.classList.add('done');
@@ -482,6 +584,11 @@ let redirecting = false;
 let t = 0;
 let last = performance.now();
 
+// Smoothed velocity used for acceleration-based movement. Per-traveler
+// `accel` controls how quickly this chases the input vector, giving
+// Spark a snappy feel and Wander a slow-to-start drift.
+const playerVel = { x: 0, z: 0 };
+
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
@@ -527,12 +634,19 @@ function loop(now) {
   if (keys['s'] || keys['arrowdown'])  { mx -= fx; mz -= fz; }
   if (keys['d'] || keys['arrowright']) { mx += rx; mz += rz; }
   if (keys['a'] || keys['arrowleft'])  { mx -= rx; mz -= rz; }
-  const len = Math.hypot(mx, mz);
-  if (len > 0) { mx /= len; mz /= len; }
+  const inputLen = Math.hypot(mx, mz);
+  if (inputLen > 0) { mx /= inputLen; mz /= inputLen; }
 
-  const baseSpeed = traveler.speed || 5;
-  player.position.x += mx * baseSpeed * dt;
-  player.position.z += mz * baseSpeed * dt;
+  // Acceleration-based velocity — the traveler's `accel` sets how
+  // quickly the current velocity chases the input-scaled target.
+  const targetVx = mx * traveler.speed;
+  const targetVz = mz * traveler.speed;
+  const k = Math.min(1, dt * traveler.accel);
+  playerVel.x += (targetVx - playerVel.x) * k;
+  playerVel.z += (targetVz - playerVel.z) * k;
+
+  player.position.x += playerVel.x * dt;
+  player.position.z += playerVel.z * dt;
 
   const maxR = 30;
   const pd = Math.hypot(player.position.x, player.position.z);
@@ -541,24 +655,60 @@ function loop(now) {
     player.position.z = (player.position.z / pd) * maxR;
   }
 
+  const speedSq = playerVel.x * playerVel.x + playerVel.z * playerVel.z;
+  const walking = speedSq > 0.25; // ~0.5 units/s threshold
+
   // Face movement direction (character's local front is -Z).
-  if (len > 0) {
-    const target = Math.atan2(-mx, -mz);
+  if (walking) {
+    const target = Math.atan2(-playerVel.x, -playerVel.z);
     let diff = target - player.rotation.y;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
     player.rotation.y += diff * Math.min(1, dt * 10);
   }
 
-  // Walk cycle — bob body/head, swing arms
-  const walking = len > 0;
-  const bob = Math.sin(t * (walking ? 10 : 2)) * (walking ? 0.08 : 0.02);
+  // Hover lifts the whole character off the ground. Wander uses this
+  // to feel floaty; Spark and Drift stay grounded.
+  const hoverY = traveler.hover > 0
+    ? traveler.hover + Math.sin(t * 1.6) * 0.06
+    : 0;
+  player.position.y = hoverY;
+
+  // Walk cycle — traveler-driven frequency and amplitude.
+  const freq = walking ? traveler.bobFreq : traveler.bobFreq * 0.3;
+  const amp  = walking ? traveler.bobAmp  : traveler.bobAmp * 0.3;
+  const bob  = Math.sin(t * freq) * amp;
   character.body.position.y = 0.55 + bob;
   character.head.position.y = 1.2 + bob;
   character.eyeL.position.y = 1.24 + bob;
   character.eyeR.position.y = 1.24 + bob;
-  character.armL.rotation.x = walking ? Math.sin(t * 10) * 0.5 : 0;
-  character.armR.rotation.x = walking ? -Math.sin(t * 10) * 0.5 : 0;
+  const swing = walking ? Math.sin(t * freq) * 0.5 : 0;
+  character.armL.rotation.x = swing;
+  character.armR.rotation.x = -swing;
+
+  // Traveler particle emission — rate scales up while moving so trails
+  // feel like motion, not just an idle aura.
+  const rate = traveler.particle.rate * (walking ? 1.8 : 1.0);
+  particleAccum += dt * rate;
+  while (particleAccum >= 1) {
+    particleAccum -= 1;
+    spawnParticle();
+  }
+  for (const p of particles) {
+    if (!p.userData.alive) continue;
+    p.userData.age += dt;
+    if (p.userData.age >= p.userData.life) {
+      p.userData.alive = false;
+      p.visible = false;
+      continue;
+    }
+    p.position.x += p.userData.vx * dt;
+    p.position.y += p.userData.vy * dt;
+    p.position.z += p.userData.vz * dt;
+    p.userData.vy += p.userData.gy * dt;
+    const fade = 1 - (p.userData.age / p.userData.life);
+    p.material.opacity = fade * 0.9;
+  }
 
   updateCamera();
 
