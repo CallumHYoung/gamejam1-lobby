@@ -540,8 +540,12 @@ let pitch = 0.45;   // tilt down from horizontal (radians)
 const camDist = 10;
 const camTargetHeight = 1.2;
 
+// Hoisted so the chat module (declared below) can flip it and the
+// keyboard / click handlers here can check it without re-wiring.
+let chatOpen = false;
+
 canvas.addEventListener('click', () => {
-  if (!traveler) return;
+  if (!traveler || chatOpen) return;
   if (document.pointerLockElement !== canvas) {
     canvas.requestPointerLock();
   }
@@ -573,8 +577,397 @@ updateCamera();
 // ------------------------------------------------------------------
 
 const keys = {};
-addEventListener('keydown', (e) => { keys[e.key.toLowerCase()] = true; });
-addEventListener('keyup',   (e) => { keys[e.key.toLowerCase()] = false; });
+addEventListener('keydown', (e) => {
+  if (chatOpen) return; // chat input owns keystrokes while open
+  const k = e.key;
+  if (traveler && (k === 't' || k === 'T' || k === 'Enter')) {
+    e.preventDefault();
+    openChat();
+    return;
+  }
+  keys[k.toLowerCase()] = true;
+});
+addEventListener('keyup', (e) => {
+  if (chatOpen) return;
+  keys[e.key.toLowerCase()] = false;
+});
+
+// ------------------------------------------------------------------
+// Multiplayer — Trystero P2P presence + chat with persistent history
+// ------------------------------------------------------------------
+//
+// Rooms: Nostr strategy, room `lobby-main` under the jam-1 appId.
+// Actions:
+//   state   — per-frame position/yaw/color/name broadcast
+//   chat    — a single chat message with a unique id + timestamp
+//   reqhist — "please send me your recent chat history"
+//   hist    — response payload with an array of recent messages
+//
+// History persistence has two layers:
+//   1. localStorage — your last ~80 messages are saved across reloads
+//      so you see your own chat log immediately on refresh.
+//   2. Peer replay — on first-joined-peer, we ask for their recent
+//      history once, and dedupe by message id so merges don't double.
+
+const MAX_HISTORY = 80;
+const BUBBLE_MS = 5000;
+const BROADCAST_INTERVAL_MS = 75;
+const HISTORY_KEY = 'gamejam1-lobby:chat:v1';
+
+const peers = new Map(); // peerId -> { state, group }
+let room = null;
+let sendState = null;
+let sendChat = null;
+let sendHistoryAction = null;
+let requestHistoryAction = null;
+let historyRequested = false;
+let lastBroadcastAt = 0;
+
+const peersEl = document.getElementById('peers');
+const chatHistoryEl = document.getElementById('chat-history');
+const chatInputEl = document.getElementById('chat-input');
+
+function escapeHtml(s = '') {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function formatChatTime(ts) {
+  const d = new Date(ts);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(arr) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(arr.slice(-MAX_HISTORY)));
+  } catch {}
+}
+
+const chatHistoryArr = loadHistory();
+const seenIds = new Set(chatHistoryArr.map((m) => m.id).filter(Boolean));
+
+function renderHistoryLine(msg) {
+  if (!chatHistoryEl) return;
+  const line = document.createElement('div');
+  line.className = 'history-line';
+  line.innerHTML =
+    `<span class="history-name" style="color:${escapeHtml(msg.color || '#2a2f3a')}">${escapeHtml(msg.name)}:</span>` +
+    `<span class="history-text">${escapeHtml(msg.text)}</span>` +
+    `<span class="history-time">${formatChatTime(msg.ts || Date.now())}</span>`;
+  chatHistoryEl.appendChild(line);
+  while (chatHistoryEl.children.length > MAX_HISTORY) {
+    chatHistoryEl.removeChild(chatHistoryEl.firstChild);
+  }
+  const atBottom =
+    chatHistoryEl.scrollHeight - chatHistoryEl.scrollTop - chatHistoryEl.clientHeight < 40;
+  if (atBottom) chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
+}
+
+// Replay persisted history on load so returning players see their log.
+for (const msg of chatHistoryArr.slice(-MAX_HISTORY)) renderHistoryLine(msg);
+if (chatHistoryEl) {
+  requestAnimationFrame(() => {
+    chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
+  });
+}
+
+function commitMessage(msg) {
+  if (!msg || !msg.id || seenIds.has(msg.id)) return;
+  seenIds.add(msg.id);
+  chatHistoryArr.push(msg);
+  if (chatHistoryArr.length > MAX_HISTORY) {
+    chatHistoryArr.splice(0, chatHistoryArr.length - MAX_HISTORY);
+  }
+  saveHistory(chatHistoryArr);
+  renderHistoryLine(msg);
+}
+
+// -------- Speech bubbles above avatars --------
+
+function setBubble(group, text) {
+  const ud = group.userData;
+  if (ud.bubble) {
+    group.remove(ud.bubble);
+    ud.bubble.material.map?.dispose();
+    ud.bubble.material.dispose();
+  }
+  const sprite = textSprite(String(text).slice(0, 80), {
+    color: '#2a2f3a',
+    bg: 'rgba(255,253,247,0.95)',
+    fontSize: 28,
+    fontWeight: 600,
+  });
+  sprite.position.set(0, 2.35, 0);
+  group.add(sprite);
+  ud.bubble = sprite;
+  ud.bubbleExpires = performance.now() + BUBBLE_MS;
+}
+
+function clearExpiredBubble(group) {
+  const ud = group.userData;
+  if (ud.bubbleExpires && performance.now() > ud.bubbleExpires) {
+    if (ud.bubble) {
+      group.remove(ud.bubble);
+      ud.bubble.material.map?.dispose();
+      ud.bubble.material.dispose();
+    }
+    ud.bubble = null;
+    ud.bubbleExpires = 0;
+  }
+}
+
+// -------- Peer avatar (trimmed vs. local: no emissive/light/arms) --------
+
+function buildPeerAvatar(colorHex, name) {
+  const group = new THREE.Group();
+  const color = new THREE.Color('#' + colorHex);
+  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.55 });
+  const skinMat = new THREE.MeshStandardMaterial({ color: 0xfff5dc, roughness: 0.7 });
+  const eyeMat  = new THREE.MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.4 });
+
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.42, 6, 14), bodyMat);
+  body.position.y = 0.55;
+  group.add(body);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 24, 20), skinMat);
+  head.position.y = 1.2;
+  group.add(head);
+
+  const eyeL = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 10), eyeMat);
+  eyeL.position.set(-0.1, 1.24, -0.25);
+  group.add(eyeL);
+  const eyeR = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 10), eyeMat);
+  eyeR.position.set(0.1, 1.24, -0.25);
+  group.add(eyeR);
+
+  const nameTag = textSprite(String(name || 'guest').slice(0, 24), {
+    color: '#2a2f3a',
+    bg: 'rgba(255,253,247,0.9)',
+    fontSize: 26,
+    fontWeight: 600,
+  });
+  nameTag.position.set(0, 1.85, 0);
+  group.add(nameTag);
+
+  group.userData = { bodyMat, nameTag, bubble: null, bubbleExpires: 0, displayName: name };
+  return group;
+}
+
+function updatePeerName(group, newName) {
+  const ud = group.userData;
+  if (ud.displayName === newName) return;
+  ud.displayName = newName;
+  group.remove(ud.nameTag);
+  ud.nameTag.material.map?.dispose();
+  ud.nameTag.material.dispose();
+  const sprite = textSprite(String(newName || 'guest').slice(0, 24), {
+    color: '#2a2f3a',
+    bg: 'rgba(255,253,247,0.9)',
+    fontSize: 26,
+    fontWeight: 600,
+  });
+  sprite.position.set(0, 1.85, 0);
+  group.add(sprite);
+  ud.nameTag = sprite;
+}
+
+// -------- Chat input flow --------
+
+function openChat() {
+  if (chatOpen || !chatInputEl) return;
+  chatOpen = true;
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+  for (const k in keys) keys[k] = false;
+  chatInputEl.style.display = 'block';
+  chatInputEl.value = '';
+  requestAnimationFrame(() => chatInputEl.focus());
+}
+
+function closeChat(commit) {
+  if (!chatOpen || !chatInputEl) return;
+  chatOpen = false;
+  const text = chatInputEl.value.trim();
+  chatInputEl.style.display = 'none';
+  chatInputEl.blur();
+  if (commit && text) {
+    const msg = {
+      id: `${incoming.username}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+      name: incoming.username,
+      color: traveler ? '#' + traveler.hex : '#2a2f3a',
+      text: text.slice(0, 200),
+      ts: Date.now(),
+    };
+    commitMessage(msg);
+    setBubble(player, msg.text);
+    if (sendChat) sendChat(msg);
+  }
+}
+
+if (chatInputEl) {
+  chatInputEl.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); closeChat(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeChat(false); }
+  });
+}
+
+// -------- Trystero wiring --------
+
+function broadcastSelf() {
+  if (!sendState || !traveler) return;
+  sendState({
+    x: player.position.x,
+    y: player.position.y,
+    z: player.position.z,
+    yaw: player.rotation.y,
+    color: traveler.hex,
+    name: incoming.username,
+  });
+}
+
+function refreshPeerCount() {
+  if (!peersEl) return;
+  peersEl.textContent = `${peers.size + 1} online`;
+}
+
+async function loadTrystero() {
+  const urls = [
+    'https://esm.run/trystero@0.23',
+    'https://cdn.jsdelivr.net/npm/trystero@0.23/+esm',
+    'https://esm.sh/trystero@0.23',
+  ];
+  let lastErr;
+  for (const url of urls) {
+    try {
+      const mod = await import(url);
+      if (mod && typeof mod.joinRoom === 'function') return mod;
+      lastErr = new Error(`no joinRoom export from ${url}`);
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('could not load trystero');
+}
+
+async function setupMultiplayer() {
+  try {
+    if (peersEl) peersEl.textContent = 'connecting…';
+    const { joinRoom } = await loadTrystero();
+    room = joinRoom({ appId: 'ordinary-game-jam-1-lobby' }, 'lobby-main');
+
+    const [sendS, getS] = room.makeAction('state');
+    const [sendC, getC] = room.makeAction('chat');
+    const [sendH, getH] = room.makeAction('hist');
+    const [sendR, getR] = room.makeAction('reqhist');
+    sendState = sendS;
+    sendChat = sendC;
+    sendHistoryAction = sendH;
+    requestHistoryAction = sendR;
+
+    getS((data, peerId) => {
+      if (!data) return;
+      let peer = peers.get(peerId);
+      if (!peer) {
+        peer = { state: null, group: null };
+        peers.set(peerId, peer);
+      }
+      if (!peer.group) {
+        peer.group = buildPeerAvatar(data.color || '888888', data.name || 'guest');
+        peer.group.position.set(data.x || 0, data.y || 0, data.z || 0);
+        scene.add(peer.group);
+      } else {
+        if (peer.state?.color !== data.color) {
+          peer.group.userData.bodyMat.color.set('#' + (data.color || '888888'));
+        }
+        if (peer.state?.name !== data.name) {
+          updatePeerName(peer.group, data.name || 'guest');
+        }
+      }
+      const prev = peer.state;
+      peer.state = {
+        x: data.x, y: data.y, z: data.z,
+        yaw: data.yaw || 0,
+        color: data.color,
+        name: data.name,
+        renderX: prev?.renderX ?? data.x,
+        renderY: prev?.renderY ?? data.y,
+        renderZ: prev?.renderZ ?? data.z,
+      };
+      refreshPeerCount();
+    });
+
+    getC((data, peerId) => {
+      if (!data || !data.text) return;
+      const msg = {
+        id: data.id || `${peerId}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+        name: String(data.name || '?').slice(0, 24),
+        color: typeof data.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(data.color) ? data.color : '#2a2f3a',
+        text: String(data.text).slice(0, 200),
+        ts: Number(data.ts) || Date.now(),
+      };
+      commitMessage(msg);
+      const peer = peers.get(peerId);
+      if (peer?.group) setBubble(peer.group, msg.text);
+    });
+
+    getR((_, peerId) => {
+      if (!sendHistoryAction) return;
+      // Reply with our latest ~30 messages so the requester can merge.
+      sendHistoryAction({ messages: chatHistoryArr.slice(-30) }, peerId);
+    });
+
+    getH((data) => {
+      if (!data || !Array.isArray(data.messages)) return;
+      // Merge by id; dedup handles everybody replying at once.
+      const merged = data.messages
+        .filter((m) => m && m.id && !seenIds.has(m.id))
+        .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      for (const m of merged) commitMessage(m);
+    });
+
+    room.onPeerJoin((id) => {
+      if (!peers.has(id)) peers.set(id, { state: null, group: null });
+      broadcastSelf();
+      refreshPeerCount();
+      // Ask the first peer we see for their recent history (once).
+      if (!historyRequested && requestHistoryAction) {
+        historyRequested = true;
+        requestHistoryAction({ want: true }, id);
+      }
+    });
+
+    room.onPeerLeave((id) => {
+      const p = peers.get(id);
+      if (p?.group) scene.remove(p.group);
+      peers.delete(id);
+      refreshPeerCount();
+    });
+
+    refreshPeerCount();
+    broadcastSelf();
+  } catch (err) {
+    console.error('[lobby] multiplayer setup failed:', err);
+    if (peersEl) peersEl.textContent = 'multiplayer offline';
+  }
+}
+
+setupMultiplayer();
+
+addEventListener('beforeunload', () => {
+  if (room) { try { room.leave(); } catch {} }
+});
 
 // ------------------------------------------------------------------
 // Main loop
@@ -617,6 +1010,20 @@ function loop(now) {
     returnPortal.torus.rotation.z += dt * 0.9;
     returnPortal.disc.material.opacity = 0.32 + Math.sin(t * 2.5) * 0.14;
   }
+
+  // Peer render update — runs regardless of traveler pick so the
+  // hub looks alive while the picker is still open.
+  for (const peer of peers.values()) {
+    if (!peer.state || !peer.group) continue;
+    const k = Math.min(1, dt * 12);
+    peer.state.renderX += (peer.state.x - peer.state.renderX) * k;
+    peer.state.renderY += (peer.state.y - peer.state.renderY) * k;
+    peer.state.renderZ += (peer.state.z - peer.state.renderZ) * k;
+    peer.group.position.set(peer.state.renderX, peer.state.renderY, peer.state.renderZ);
+    peer.group.rotation.y = peer.state.yaw;
+    clearExpiredBubble(peer.group);
+  }
+  clearExpiredBubble(player);
 
   // Gate input on traveler pick
   if (!traveler) {
@@ -711,6 +1118,12 @@ function loop(now) {
   }
 
   updateCamera();
+
+  // Throttled state broadcast (peer interp runs above the gate).
+  if (now - lastBroadcastAt > BROADCAST_INTERVAL_MS) {
+    lastBroadcastAt = now;
+    broadcastSelf();
+  }
 
   // Portal collision
   if (!redirecting) {
