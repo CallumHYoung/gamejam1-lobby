@@ -7,7 +7,28 @@
 import * as THREE from 'three';
 
 const incoming = Portal.readPortalParams();
-document.getElementById('username').textContent = incoming.username;
+
+// Resolve a display name. Priority:
+//   1. localStorage (set last time we committed a real name)
+//   2. portal-passed username, if it isn't a generated guest-XXXX stub
+//   3. the incoming guest-XXXX stub (we'll prompt before letting them
+//      commit a traveler, so this is only temporary)
+const NAME_KEY = 'gamejam1-lobby:username:v1';
+const usernameEl = document.getElementById('username');
+let username = incoming.username;
+let hasRealName = false;
+try {
+  const saved = localStorage.getItem(NAME_KEY);
+  if (saved) {
+    username = saved;
+    hasRealName = true;
+  } else if (incoming.username && !incoming.username.startsWith('guest-')) {
+    username = incoming.username;
+    hasRealName = true;
+    localStorage.setItem(NAME_KEY, username);
+  }
+} catch {}
+if (usernameEl) usernameEl.textContent = username;
 
 // ------------------------------------------------------------------
 // Scene, renderer, camera
@@ -507,8 +528,43 @@ const CHOICES = {
 let traveler = null;
 const chooseEl = document.getElementById('choose');
 const travelerEl = document.getElementById('traveler');
+const nameFieldEl = document.getElementById('name-field');
+const nameInputEl = document.getElementById('name-input');
+
+// Show the name prompt on join only for players we don't already have
+// a saved name for — returning visitors and portal arrivals with a
+// real name skip it.
+if (!hasRealName && nameFieldEl) {
+  nameFieldEl.hidden = false;
+  if (nameInputEl) requestAnimationFrame(() => nameInputEl.focus());
+}
+
+if (nameInputEl) {
+  // Keep keystrokes contained so they don't leak into the movement
+  // keymap. Enter advances focus to the first card, turning the pick
+  // into a two-key flow (type name → Enter → Enter).
+  nameInputEl.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const firstCard = chooseEl?.querySelector('.card');
+      if (firstCard) firstCard.focus();
+    }
+  });
+}
+
+function commitName() {
+  if (hasRealName || !nameInputEl) return;
+  const entered = nameInputEl.value.trim().slice(0, 24);
+  if (!entered) return; // keep the guest-XXXX stub; they'll be reminded next time
+  username = entered;
+  hasRealName = true;
+  try { localStorage.setItem(NAME_KEY, username); } catch {}
+  if (usernameEl) usernameEl.textContent = username;
+}
 
 function pickTraveler(choice) {
+  commitName();
   traveler = choice;
   applyTravelerStyle(choice);
   if (travelerEl) travelerEl.textContent = `traveler: ${choice.name}`;
@@ -803,8 +859,8 @@ function closeChat(commit) {
   chatInputEl.blur();
   if (commit && text) {
     const msg = {
-      id: `${incoming.username}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
-      name: incoming.username,
+      id: `${username}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+      name: username,
       color: traveler ? '#' + traveler.hex : '#2a2f3a',
       text: text.slice(0, 200),
       ts: Date.now(),
@@ -833,7 +889,7 @@ function broadcastSelf() {
     z: player.position.z,
     yaw: player.rotation.y,
     color: traveler.hex,
-    name: incoming.username,
+    name: username,
   });
 }
 
@@ -1133,7 +1189,7 @@ function loop(now) {
       if (Math.hypot(dx, dz) < 1.35) {
         redirecting = true;
         Portal.sendPlayerThroughPortal(g.userData.game.url, {
-          username: incoming.username,
+          username,
           color: traveler.hex,
           speed: traveler.speed,
         });
@@ -1148,7 +1204,7 @@ function loop(now) {
     if (Math.hypot(dx, dz) < 1.35) {
       redirecting = true;
       Portal.sendPlayerThroughPortal(returnPortal.target, {
-        username: incoming.username,
+        username,
         color: traveler.hex,
         speed: traveler.speed,
       });
