@@ -233,7 +233,7 @@ function playCrunch(volume = 1.0, pan = 0) {
   filter.Q.value = 0.35;
 
   const gain = sfxCtx.createGain();
-  const peak = Math.max(0, Math.min(1, volume)) * 0.08;
+  const peak = Math.max(0, Math.min(1, volume)) * 0.06;
   gain.gain.setValueAtTime(0, t);
   // Slower attack (~55ms) rounds the transient off entirely. Longer
   // exponential tail reads as a soft sink into snow.
@@ -318,8 +318,8 @@ function buildPortalHums() {
     breathOsc.start();
     portalHums.push({ obj3d, gainNode: gain, maxGain: 0.22 });
   };
-  portals.forEach((p, i) => make(p, 150 + (i % 3) * 8));
-  if (returnPortal) make(returnPortal.group, 132);
+  portals.forEach((p, i) => make(p, 118 + (i % 3) * 7));
+  if (returnPortal) make(returnPortal.group, 104);
 }
 
 function updatePortalHums() {
