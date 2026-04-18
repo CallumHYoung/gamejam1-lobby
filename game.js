@@ -416,23 +416,14 @@ function pickTraveler(choice) {
   }
 }
 
-// Only skip the picker when we genuinely have a returning traveler —
-// that is, fromPortal is set AND they have a ref back to the previous
-// game. A bare `?portal=true` with no ref shouldn't suppress choices.
-if (chooseEl && incoming.fromPortal && incoming.ref) {
-  pickTraveler({
-    key: 'return',
-    hex: incoming.color,
-    name: 'returning',
-    speed: incoming.speed || 5,
-    desc: 'welcome back',
-  });
-} else if (chooseEl) {
+// Always show the picker on every load. Returning players re-pick —
+// it's one extra click, which is less confusing than the overlay
+// vanishing before they can read it.
+if (chooseEl) {
   for (const btn of chooseEl.querySelectorAll('.card')) {
     btn.addEventListener('click', () => pickTraveler(CHOICES[btn.dataset.key]));
   }
 } else {
-  // No overlay in the DOM (shouldn't happen, but don't wedge the loop).
   pickTraveler(CHOICES.drift);
 }
 
