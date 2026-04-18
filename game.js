@@ -181,7 +181,7 @@ function playCrunch(volume = 1.0, pan = 0) {
   filter.Q.value = 0.35;
 
   const gain = sfxCtx.createGain();
-  const peak = Math.max(0, Math.min(1, volume)) * 0.2;
+  const peak = Math.max(0, Math.min(1, volume)) * 0.08;
   gain.gain.setValueAtTime(0, t);
   // Slower attack (~55ms) rounds the transient off entirely. Longer
   // exponential tail reads as a soft sink into snow.
