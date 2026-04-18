@@ -31,6 +31,79 @@ try {
 if (usernameEl) usernameEl.textContent = username;
 
 // ------------------------------------------------------------------
+// Background music — controls + persistence
+// ------------------------------------------------------------------
+
+const AUDIO_VOL_KEY  = 'gamejam1-lobby:bgm:volume';
+const AUDIO_MUTE_KEY = 'gamejam1-lobby:bgm:muted';
+
+const bgmEl          = document.getElementById('bgm');
+const audioToggleEl  = document.getElementById('audio-toggle');
+const audioVolumeEl  = document.getElementById('audio-volume');
+
+let bgmStarted = false;
+
+function loadAudioPrefs() {
+  let volume = 0.5;
+  let muted = false;
+  try {
+    const savedVol = localStorage.getItem(AUDIO_VOL_KEY);
+    if (savedVol !== null) {
+      const n = Number(savedVol);
+      if (Number.isFinite(n)) volume = Math.max(0, Math.min(1, n));
+    }
+    muted = localStorage.getItem(AUDIO_MUTE_KEY) === '1';
+  } catch {}
+  return { volume, muted };
+}
+
+function applyAudioPrefs({ volume, muted }) {
+  if (bgmEl) {
+    bgmEl.volume = volume;
+    bgmEl.muted = muted;
+  }
+  if (audioVolumeEl) audioVolumeEl.value = String(Math.round(volume * 100));
+  if (audioToggleEl) {
+    audioToggleEl.textContent = muted ? 'unmute' : 'mute';
+    audioToggleEl.setAttribute('aria-pressed', muted ? 'true' : 'false');
+  }
+}
+
+applyAudioPrefs(loadAudioPrefs());
+
+function startBgm() {
+  if (bgmStarted || !bgmEl) return;
+  const p = bgmEl.play();
+  if (p && typeof p.catch === 'function') {
+    p.then(() => { bgmStarted = true; })
+     .catch(() => { /* autoplay blocked; resolved on next user gesture */ });
+  } else {
+    bgmStarted = true;
+  }
+}
+
+if (audioToggleEl && bgmEl) {
+  audioToggleEl.addEventListener('click', () => {
+    const muted = !bgmEl.muted;
+    bgmEl.muted = muted;
+    audioToggleEl.textContent = muted ? 'unmute' : 'mute';
+    audioToggleEl.setAttribute('aria-pressed', muted ? 'true' : 'false');
+    try { localStorage.setItem(AUDIO_MUTE_KEY, muted ? '1' : '0'); } catch {}
+    // The click itself is a valid gesture for autoplay, so kick the
+    // track off now if it hasn't started yet.
+    startBgm();
+  });
+}
+
+if (audioVolumeEl && bgmEl) {
+  audioVolumeEl.addEventListener('input', () => {
+    const v = Math.max(0, Math.min(1, Number(audioVolumeEl.value) / 100));
+    bgmEl.volume = v;
+    try { localStorage.setItem(AUDIO_VOL_KEY, String(v)); } catch {}
+  });
+}
+
+// ------------------------------------------------------------------
 // Scene, renderer, camera
 // ------------------------------------------------------------------
 
@@ -571,6 +644,8 @@ function pickTraveler(choice) {
   traveler = choice;
   applyTravelerStyle(choice);
   if (travelerEl) travelerEl.textContent = `traveler: ${choice.name}`;
+  // Kick the BGM off the first user gesture we get.
+  startBgm();
   if (chooseEl) {
     chooseEl.classList.add('done');
     setTimeout(() => chooseEl.remove(), 500);

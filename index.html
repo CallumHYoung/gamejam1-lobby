@@ -21,6 +21,13 @@
   <div id="hint">WASD to move, Space to jump — click to look around, Esc to release — T or Enter to chat</div>
 </div>
 
+<audio id="bgm" loop preload="metadata" src="Forked%20Reflections.mp3"></audio>
+
+<div id="audio-controls" aria-label="music controls">
+  <button id="audio-toggle" type="button" aria-pressed="false">mute</button>
+  <input id="audio-volume" type="range" min="0" max="100" value="50" aria-label="music volume" />
+</div>
+
 <div id="chat-box">
   <div id="chat-history"></div>
 </div>
