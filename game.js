@@ -133,18 +133,25 @@ function ensureSfx() {
   sfxMaster.connect(sfxCtx.destination);
 
   sfxCrunchBus = sfxCtx.createGain();
-  sfxCrunchBus.gain.value = 0.55;
+  sfxCrunchBus.gain.value = 0.7;
   sfxCrunchBus.connect(sfxMaster);
 
   sfxHumBus = sfxCtx.createGain();
-  sfxHumBus.gain.value = 0.4;
+  sfxHumBus.gain.value = 0.35;
   sfxHumBus.connect(sfxMaster);
 
-  // 0.25s of white noise — reused as the source for every footstep.
+  // Brown noise (integrated white noise, low-passed by construction)
+  // is much softer than white — the high-frequency hiss that made the
+  // old crunch sound metallic/ringing is mostly absent. DC drift is
+  // suppressed with a leaky integrator.
   const len = Math.floor(sfxCtx.sampleRate * 0.25);
   noiseBuffer = sfxCtx.createBuffer(1, len, sfxCtx.sampleRate);
   const data = noiseBuffer.getChannelData(0);
-  for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  let acc = 0;
+  for (let i = 0; i < len; i++) {
+    acc = acc * 0.985 + (Math.random() * 2 - 1) * 0.22;
+    data[i] = acc;
+  }
 
   buildPortalHums();
   return sfxCtx;
@@ -155,27 +162,31 @@ function setSfxMuted(muted) {
   sfxMaster.gain.setTargetAtTime(muted ? 0 : 1, sfxCtx.currentTime, 0.02);
 }
 
-// One short filtered-noise burst with a fast attack/decay envelope and
-// a downward filter sweep — the sweep gives it the "scrunch" bite.
+// Soft compacted-snow thud: brown noise through a low-pass that sweeps
+// downward, wrapped in a slow attack and lingering tail. No high-Q
+// bandpass and no bright frequencies, so it reads as "padded footfall"
+// rather than "tapping metal."
 function playCrunch(volume = 1.0, pan = 0) {
   if (!sfxCtx || !noiseBuffer) return;
   const t = sfxCtx.currentTime;
   const src = sfxCtx.createBufferSource();
   src.buffer = noiseBuffer;
-  src.playbackRate.value = 0.85 + Math.random() * 0.3;
+  src.playbackRate.value = 0.9 + Math.random() * 0.2;
 
   const filter = sfxCtx.createBiquadFilter();
-  filter.type = 'bandpass';
-  const fBase = 1600 + Math.random() * 900;
+  filter.type = 'lowpass';
+  const fBase = 620 + Math.random() * 180;
   filter.frequency.setValueAtTime(fBase, t);
-  filter.frequency.exponentialRampToValueAtTime(Math.max(200, fBase * 0.5), t + 0.11);
-  filter.Q.value = 0.7;
+  filter.frequency.exponentialRampToValueAtTime(Math.max(180, fBase * 0.45), t + 0.18);
+  filter.Q.value = 0.4;
 
   const gain = sfxCtx.createGain();
-  const peak = Math.max(0, Math.min(1, volume)) * 0.75;
+  const peak = Math.max(0, Math.min(1, volume)) * 0.32;
   gain.gain.setValueAtTime(0, t);
-  gain.gain.linearRampToValueAtTime(peak, t + 0.008);
-  gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.13);
+  // Slow attack (~30ms) kills the click. Softer exponential tail reads
+  // as settling into snow rather than a sharp cutoff.
+  gain.gain.linearRampToValueAtTime(peak, t + 0.03);
+  gain.gain.exponentialRampToValueAtTime(0.0005, t + 0.24);
 
   src.connect(filter);
   filter.connect(gain);
@@ -188,7 +199,7 @@ function playCrunch(volume = 1.0, pan = 0) {
     gain.connect(sfxCrunchBus);
   }
   src.start(t);
-  src.stop(t + 0.2);
+  src.stop(t + 0.3);
 }
 
 // Remote crunch: attenuate + pan based on listener (player + camera).
@@ -205,40 +216,58 @@ function playCrunchAt(x, z) {
   playCrunch(0.8 * falloff * falloff, pan);
 }
 
-// Continuous drone per portal: two detuned saws through a breathing
-// low-pass. Gain is 0 until updatePortalHums() raises it with proximity.
+// Continuous drone per portal: a pure sine fundamental plus a quiet
+// sine an octave up for a hint of shimmer, summed through a gentle
+// (non-resonant) low-pass. The only movement is a very slow amplitude
+// LFO — no detune beating and no cutoff sweeping, which is what made
+// the previous version feel "vibraty." The result is a soft pad rather
+// than a modulated synth tone.
 function buildPortalHums() {
   if (!sfxCtx || portalHums.length) return;
   const make = (obj3d, freq) => {
-    const osc1 = sfxCtx.createOscillator();
-    const osc2 = sfxCtx.createOscillator();
-    osc1.type = 'sawtooth';
-    osc2.type = 'sawtooth';
-    osc1.frequency.value = freq;
-    osc2.frequency.value = freq * 1.005;
+    const fund = sfxCtx.createOscillator();
+    fund.type = 'sine';
+    fund.frequency.value = freq;
+
+    const high = sfxCtx.createOscillator();
+    high.type = 'sine';
+    high.frequency.value = freq * 2;
+    const highGain = sfxCtx.createGain();
+    highGain.gain.value = 0.18;
+
     const filter = sfxCtx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.value = 640;
-    filter.Q.value = 3;
-    const lfo = sfxCtx.createOscillator();
-    const lfoGain = sfxCtx.createGain();
-    lfo.frequency.value = 0.35;
-    lfoGain.gain.value = 140;
-    lfo.connect(lfoGain);
-    lfoGain.connect(filter.frequency);
+    filter.frequency.value = 900;
+    filter.Q.value = 0.5;
+
+    // Subtle amplitude breath — ~0.12Hz, depth ±0.06 around unity.
+    const breathOsc = sfxCtx.createOscillator();
+    breathOsc.type = 'sine';
+    breathOsc.frequency.value = 0.12;
+    const breathDepth = sfxCtx.createGain();
+    breathDepth.gain.value = 0.06;
+    const breathGain = sfxCtx.createGain();
+    breathGain.gain.value = 1;
+    breathOsc.connect(breathDepth);
+    breathDepth.connect(breathGain.gain);
+
     const gain = sfxCtx.createGain();
     gain.gain.value = 0;
-    osc1.connect(filter);
-    osc2.connect(filter);
-    filter.connect(gain);
+
+    fund.connect(filter);
+    high.connect(highGain);
+    highGain.connect(filter);
+    filter.connect(breathGain);
+    breathGain.connect(gain);
     gain.connect(sfxHumBus);
-    osc1.start();
-    osc2.start();
-    lfo.start();
-    portalHums.push({ obj3d, gainNode: gain, maxGain: 0.5 });
+
+    fund.start();
+    high.start();
+    breathOsc.start();
+    portalHums.push({ obj3d, gainNode: gain, maxGain: 0.4 });
   };
-  portals.forEach((p, i) => make(p, 92 + (i % 3) * 7));
-  if (returnPortal) make(returnPortal.group, 74);
+  portals.forEach((p, i) => make(p, 70 + (i % 3) * 4));
+  if (returnPortal) make(returnPortal.group, 58);
 }
 
 function updatePortalHums() {
