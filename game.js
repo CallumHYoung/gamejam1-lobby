@@ -509,18 +509,21 @@ const CHOICES = {
     key: 'spark', hex: 'e8b64c', name: 'Spark', desc: 'quick on their feet',
     speed: 6.5, accel: 35, bobFreq: 12, bobAmp: 0.08, hover: 0,
     glow: 1.3, emissive: 0.55,
+    jumpSpeed: 6.8, gravity: -20,
     particle: { color: 0xffd870, size: 0.1, life: 0.65, rate: 34, behavior: 'burst' },
   },
   drift: {
     key: 'drift', hex: '7fb9ae', name: 'Drift', desc: 'steady, curious',
     speed: 5, accel: 18, bobFreq: 10, bobAmp: 0.06, hover: 0,
     glow: 0.75, emissive: 0.35,
+    jumpSpeed: 5.8, gravity: -17,
     particle: { color: 0x8fd6c8, size: 0.14, life: 1.8, rate: 11, behavior: 'rise' },
   },
   wander: {
     key: 'wander', hex: 'a892c6', name: 'Wander', desc: 'takes their time',
     speed: 4.2, accel: 8, bobFreq: 4, bobAmp: 0.1, hover: 0.18,
     glow: 0.55, emissive: 0.3,
+    jumpSpeed: 4.8, gravity: -9,
     particle: { color: 0xc3b3e0, size: 0.2, life: 2.6, rate: 6, behavior: 'float' },
   },
 };
@@ -641,6 +644,8 @@ addEventListener('keydown', (e) => {
     openChat();
     return;
   }
+  // Don't let Space scroll the page while playing.
+  if (traveler && k === ' ') e.preventDefault();
   keys[k.toLowerCase()] = true;
 });
 addEventListener('keyup', (e) => {
@@ -784,12 +789,19 @@ function clearExpiredBubble(group) {
   }
 }
 
-// -------- Peer avatar (trimmed vs. local: no emissive/light/arms) --------
+// -------- Peer avatar (body + head + eyes + name tag; emissive and
+// glow light are driven by the peer's broadcast travelerKey, so their
+// choice reads visually from across the hub). --------
 
-function buildPeerAvatar(colorHex, name) {
+function buildPeerAvatar(colorHex, name, travelerKey) {
   const group = new THREE.Group();
   const color = new THREE.Color('#' + colorHex);
-  const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.55 });
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color,
+    emissive: color,
+    emissiveIntensity: 0,
+    roughness: 0.55,
+  });
   const skinMat = new THREE.MeshStandardMaterial({ color: 0xfff5dc, roughness: 0.7 });
   const eyeMat  = new THREE.MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.4 });
 
@@ -808,6 +820,10 @@ function buildPeerAvatar(colorHex, name) {
   eyeR.position.set(0.1, 1.24, -0.25);
   group.add(eyeR);
 
+  const glowLight = new THREE.PointLight(color, 0, 5, 2);
+  glowLight.position.y = 0.8;
+  group.add(glowLight);
+
   const nameTag = textSprite(String(name || 'guest').slice(0, 24), {
     color: '#2a2f3a',
     bg: 'rgba(255,253,247,0.9)',
@@ -817,8 +833,32 @@ function buildPeerAvatar(colorHex, name) {
   nameTag.position.set(0, 1.85, 0);
   group.add(nameTag);
 
-  group.userData = { bodyMat, nameTag, bubble: null, bubbleExpires: 0, displayName: name };
+  group.userData = {
+    bodyMat, glowLight, nameTag,
+    bubble: null, bubbleExpires: 0,
+    displayName: name,
+    travelerKey: null,
+  };
+
+  applyPeerChoice(group, colorHex, travelerKey);
   return group;
+}
+
+function applyPeerChoice(group, colorHex, travelerKey) {
+  const ud = group.userData;
+  const color = new THREE.Color('#' + (colorHex || '888888'));
+  ud.bodyMat.color.copy(color);
+  ud.bodyMat.emissive.copy(color);
+  const choice = travelerKey && CHOICES[travelerKey];
+  if (choice) {
+    ud.bodyMat.emissiveIntensity = choice.emissive;
+    ud.glowLight.color.copy(color);
+    ud.glowLight.intensity = choice.glow;
+  } else {
+    ud.bodyMat.emissiveIntensity = 0;
+    ud.glowLight.intensity = 0;
+  }
+  ud.travelerKey = travelerKey || null;
 }
 
 function updatePeerName(group, newName) {
@@ -890,6 +930,7 @@ function broadcastSelf() {
     yaw: player.rotation.y,
     color: traveler.hex,
     name: username,
+    travelerKey: traveler.key,
   });
 }
 
@@ -940,12 +981,15 @@ async function setupMultiplayer() {
         peers.set(peerId, peer);
       }
       if (!peer.group) {
-        peer.group = buildPeerAvatar(data.color || '888888', data.name || 'guest');
+        peer.group = buildPeerAvatar(data.color || '888888', data.name || 'guest', data.travelerKey);
         peer.group.position.set(data.x || 0, data.y || 0, data.z || 0);
         scene.add(peer.group);
       } else {
-        if (peer.state?.color !== data.color) {
-          peer.group.userData.bodyMat.color.set('#' + (data.color || '888888'));
+        if (
+          peer.state?.color !== data.color ||
+          peer.state?.travelerKey !== data.travelerKey
+        ) {
+          applyPeerChoice(peer.group, data.color || '888888', data.travelerKey);
         }
         if (peer.state?.name !== data.name) {
           updatePeerName(peer.group, data.name || 'guest');
@@ -957,6 +1001,7 @@ async function setupMultiplayer() {
         yaw: data.yaw || 0,
         color: data.color,
         name: data.name,
+        travelerKey: data.travelerKey || null,
         renderX: prev?.renderX ?? data.x,
         renderY: prev?.renderY ?? data.y,
         renderZ: prev?.renderZ ?? data.z,
@@ -1037,6 +1082,11 @@ let last = performance.now();
 // `accel` controls how quickly this chases the input vector, giving
 // Spark a snappy feel and Wander a slow-to-start drift.
 const playerVel = { x: 0, z: 0 };
+
+// Jump physics — jumpY is the vertical offset above the hover
+// baseline. Gravity integrates jumpVy each frame; landing clamps to 0.
+let jumpY = 0;
+let jumpVy = 0;
 
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
@@ -1135,7 +1185,20 @@ function loop(now) {
   const hoverY = traveler.hover > 0
     ? traveler.hover + Math.sin(t * 1.6) * 0.06
     : 0;
-  player.position.y = hoverY;
+
+  // Jump: launch from the hover baseline if grounded and Space is
+  // held. Gravity always integrates while airborne; landing clamps.
+  const grounded = jumpY === 0 && jumpVy === 0;
+  if (grounded && keys[' ']) {
+    jumpVy = traveler.jumpSpeed;
+  }
+  if (!grounded || jumpVy !== 0) {
+    jumpVy += traveler.gravity * dt;
+    jumpY += jumpVy * dt;
+    if (jumpY < 0) { jumpY = 0; jumpVy = 0; }
+  }
+
+  player.position.y = hoverY + jumpY;
 
   // Walk cycle — traveler-driven frequency and amplitude.
   const freq = walking ? traveler.bobFreq : traveler.bobFreq * 0.3;
