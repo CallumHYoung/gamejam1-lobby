@@ -199,10 +199,6 @@ const lanternLight = new THREE.PointLight(0xffd494, 1.2, 10, 2);
 lanternLight.position.y = 1.55;
 scene.add(lanternLight);
 
-// Central lantern halo — added below after the radial glow texture
-// helper is defined. Declared as let so the block below can assign.
-let lanternHalo;
-
 // ------------------------------------------------------------------
 // Night sky — radial glow texture, full moon + halo, star field
 // ------------------------------------------------------------------
@@ -223,30 +219,6 @@ function makeRadialGlowTexture() {
   return tex;
 }
 const glowTex = makeRadialGlowTexture();
-
-// Shared builder for light-source halos. Additive + fog-disabled so
-// the colored glow adds onto the snow-haze rather than fading to fog
-// color; size attenuation means halos shrink to a pinprick at range
-// and bloom as the camera gets close, which reads as "lights finding
-// their way through the storm."
-function makeGlowHalo(color, scale, opacity) {
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTex,
-    color,
-    transparent: true,
-    opacity,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    fog: false,
-  }));
-  sprite.scale.set(scale, scale, 1);
-  return sprite;
-}
-
-// Lantern halo now that the helper exists.
-lanternHalo = makeGlowHalo(0xffd494, 2.2, 0.25);
-lanternHalo.position.y = 1.55;
-scene.add(lanternHalo);
 
 // Full moon sits off to one side of the sky; halo fakes a soft bloom.
 const moonPos = new THREE.Vector3(-28, 32, -42);
@@ -328,7 +300,14 @@ for (let i = 0; i < LAMP_COUNT; i++) {
   scene.add(head);
   lampHeads.push(head);
 
-  const halo = makeGlowHalo(0xffc680, 1.6, 0.28);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex,
+    color: 0xffc680,
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false,
+  }));
+  halo.scale.set(1.4, 1.4, 1);
   halo.position.set(x, 3.4, z);
   scene.add(halo);
 
@@ -343,7 +322,7 @@ for (let i = 0; i < LAMP_COUNT; i++) {
 // Snow — large Points cloud drifting down over the hub
 // ------------------------------------------------------------------
 
-const SNOW_COUNT = 5000;
+const SNOW_COUNT = 10000;
 const SNOW_AREA = 72;
 const SNOW_TOP = 20;
 const snowPositions = new Float32Array(SNOW_COUNT * 3);
@@ -464,8 +443,20 @@ function makePortal(game, angle) {
   disc.position.y = 1.9;
   group.add(disc);
 
-  const halo = makeGlowHalo(color, 3.8, 0.32);
+  // depthTest off + low renderOrder so the camera-facing sprite doesn't
+  // get clipped by the vertical portal disc — otherwise the sprite plane
+  // intersects the disc and leaves a hard half-bright/half-dim line.
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex,
+    color,
+    transparent: true,
+    opacity: 0.32,
+    depthWrite: false,
+    depthTest: false,
+  }));
+  halo.scale.set(4.2, 4.2, 1);
   halo.position.y = 1.9;
+  halo.renderOrder = -1;
   group.add(halo);
 
   const light = new THREE.PointLight(color, 0.85, 8, 2);
@@ -532,8 +523,17 @@ if (incoming.ref) {
   disc.position.y = 1.9;
   group.add(disc);
 
-  const halo = makeGlowHalo(color, 3.8, 0.36);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex,
+    color,
+    transparent: true,
+    opacity: 0.36,
+    depthWrite: false,
+    depthTest: false,
+  }));
+  halo.scale.set(4.2, 4.2, 1);
   halo.position.y = 1.9;
+  halo.renderOrder = -1;
   group.add(halo);
 
   const light = new THREE.PointLight(color, 1.0, 8, 2);
@@ -735,12 +735,7 @@ function buildCharacter(colorHex) {
   glowLight.position.y = 0.8;
   group.add(glowLight);
 
-  // Halo sprite so the player also reads as a beacon in the snow.
-  const halo = makeGlowHalo(color, 1.8, 0);
-  halo.position.y = 0.9;
-  group.add(halo);
-
-  return { group, bodyMat, body, head, armL, armR, eyeL, eyeR, glowLight, halo };
+  return { group, bodyMat, body, head, armL, armR, eyeL, eyeR, glowLight };
 }
 
 const character = buildCharacter(incoming.color);
@@ -756,8 +751,6 @@ function applyTravelerStyle(choice) {
   character.bodyMat.emissiveIntensity = choice.emissive;
   character.glowLight.color.copy(color);
   character.glowLight.intensity = choice.glow;
-  character.halo.material.color.copy(color);
-  character.halo.material.opacity = Math.min(0.3, choice.glow * 0.22);
 }
 
 // ------------------------------------------------------------------
@@ -1104,10 +1097,6 @@ function buildPeerAvatar(colorHex, name, travelerKey) {
   glowLight.position.y = 0.8;
   group.add(glowLight);
 
-  const halo = makeGlowHalo(color, 1.8, 0);
-  halo.position.y = 0.9;
-  group.add(halo);
-
   const nameTag = textSprite(String(name || 'guest').slice(0, 24), {
     color: '#2a2f3a',
     bg: 'rgba(255,253,247,0.9)',
@@ -1118,7 +1107,7 @@ function buildPeerAvatar(colorHex, name, travelerKey) {
   group.add(nameTag);
 
   group.userData = {
-    bodyMat, glowLight, halo, nameTag,
+    bodyMat, glowLight, nameTag,
     bubble: null, bubbleExpires: 0,
     displayName: name,
     travelerKey: null,
@@ -1133,17 +1122,14 @@ function applyPeerChoice(group, colorHex, travelerKey) {
   const color = new THREE.Color('#' + (colorHex || '888888'));
   ud.bodyMat.color.copy(color);
   ud.bodyMat.emissive.copy(color);
-  ud.halo.material.color.copy(color);
   const choice = travelerKey && CHOICES[travelerKey];
   if (choice) {
     ud.bodyMat.emissiveIntensity = choice.emissive;
     ud.glowLight.color.copy(color);
     ud.glowLight.intensity = choice.glow;
-    ud.halo.material.opacity = Math.min(0.3, choice.glow * 0.22);
   } else {
     ud.bodyMat.emissiveIntensity = 0;
     ud.glowLight.intensity = 0;
-    ud.halo.material.opacity = 0;
   }
   ud.travelerKey = travelerKey || null;
 }
