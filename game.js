@@ -117,7 +117,8 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x070a18);
 // Snowy haze — exponential falloff so distant objects dim smoothly
 // rather than stopping at a hard edge. Moon and stars opt out of fog.
-scene.fog = new THREE.FogExp2(0x0b1120, 0.028);
+// Heavy density + lightened fog color reads as thick snow in the air.
+scene.fog = new THREE.FogExp2(0x1a2340, 0.07);
 
 const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 200);
 
@@ -321,7 +322,7 @@ for (let i = 0; i < LAMP_COUNT; i++) {
 // Snow — large Points cloud drifting down over the hub
 // ------------------------------------------------------------------
 
-const SNOW_COUNT = 750;
+const SNOW_COUNT = 2000;
 const SNOW_AREA = 72;
 const SNOW_TOP = 20;
 const snowPositions = new Float32Array(SNOW_COUNT * 3);
@@ -340,10 +341,10 @@ const snowGeom = new THREE.BufferGeometry();
 snowGeom.setAttribute('position', new THREE.Float32BufferAttribute(snowPositions, 3));
 const snow = new THREE.Points(snowGeom, new THREE.PointsMaterial({
   color: 0xffffff,
-  size: 0.13,
+  size: 0.18,
   sizeAttenuation: true,
   transparent: true,
-  opacity: 0.85,
+  opacity: 0.9,
   depthWrite: false,
 }));
 scene.add(snow);
