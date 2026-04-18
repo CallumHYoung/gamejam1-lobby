@@ -126,6 +126,7 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  if (snowMat) snowMat.uniforms.uPixelScale.value = innerHeight * renderer.getPixelRatio() * 0.5;
 });
 
 // ------------------------------------------------------------------
@@ -319,34 +320,87 @@ for (let i = 0; i < LAMP_COUNT; i++) {
 }
 
 // ------------------------------------------------------------------
-// Snow — large Points cloud drifting down over the hub
+// Snow — GPU-driven Points cloud. Each flake's position is derived on
+// the GPU from (baseX, baseY, baseZ, fallSpeed, swayPhase, driftPhase)
+// plus a single uTime uniform, so the only per-frame CPU cost is a
+// uniform write. No JS loop, no buffer upload. Soft circular sprites
+// let fewer particles look denser than a larger hard-pixel cloud.
 // ------------------------------------------------------------------
 
-const SNOW_COUNT = 10000;
+const SNOW_COUNT = 4000;
 const SNOW_AREA = 72;
 const SNOW_TOP = 20;
 const snowPositions = new Float32Array(SNOW_COUNT * 3);
-const snowVel = new Float32Array(SNOW_COUNT * 3);
-const snowSway = new Float32Array(SNOW_COUNT); // phase offset per flake
+const snowData = new Float32Array(SNOW_COUNT * 3); // fallSpeed, swayPhase, driftPhase
 for (let i = 0; i < SNOW_COUNT; i++) {
   snowPositions[i * 3]     = (Math.random() - 0.5) * SNOW_AREA;
   snowPositions[i * 3 + 1] = Math.random() * SNOW_TOP;
   snowPositions[i * 3 + 2] = (Math.random() - 0.5) * SNOW_AREA;
-  snowVel[i * 3]     = (Math.random() - 0.5) * 0.25;
-  snowVel[i * 3 + 1] = -(0.55 + Math.random() * 0.55);
-  snowVel[i * 3 + 2] = (Math.random() - 0.5) * 0.25;
-  snowSway[i] = Math.random() * Math.PI * 2;
+  snowData[i * 3]     = 0.55 + Math.random() * 0.55;
+  snowData[i * 3 + 1] = Math.random() * Math.PI * 2;
+  snowData[i * 3 + 2] = Math.random() * Math.PI * 2;
 }
 const snowGeom = new THREE.BufferGeometry();
 snowGeom.setAttribute('position', new THREE.Float32BufferAttribute(snowPositions, 3));
-const snow = new THREE.Points(snowGeom, new THREE.PointsMaterial({
-  color: 0xffffff,
-  size: 0.18,
-  sizeAttenuation: true,
+snowGeom.setAttribute('aData', new THREE.Float32BufferAttribute(snowData, 3));
+
+const snowMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uTop: { value: SNOW_TOP },
+    // Viewport-based size factor so the flakes keep the same on-screen
+    // size whether the window is tiny or full-res. Updated on resize.
+    uPixelScale: { value: innerHeight * renderer.getPixelRatio() * 0.5 },
+    uSize: { value: 0.22 },
+    uTex: { value: glowTex },
+  },
+  vertexShader: /* glsl */ `
+    uniform float uTime;
+    uniform float uTop;
+    uniform float uSize;
+    uniform float uPixelScale;
+    attribute vec3 aData;
+    varying float vAlpha;
+    void main() {
+      float fall = aData.x;
+      float swayP = aData.y;
+      float driftP = aData.z;
+      // Wrap vertically via mod so flakes cycle from top back to top
+      // without any JS-side respawn logic.
+      float y = mod(position.y - fall * uTime, uTop);
+      float x = position.x + sin(uTime * 0.8 + swayP) * 0.25;
+      float z = position.z + cos(uTime * 0.55 + driftP) * 0.25;
+      vec4 mv = modelViewMatrix * vec4(x, y, z, 1.0);
+      gl_Position = projectionMatrix * mv;
+      gl_PointSize = uSize * uPixelScale / max(0.1, -mv.z);
+      // Fade flakes in near the top (fresh respawn) and out near the
+      // ground, so the modulo wrap isn't visible as a pop.
+      float topFade = 1.0 - smoothstep(uTop - 2.5, uTop, y);
+      float botFade = smoothstep(0.0, 1.2, y);
+      vAlpha = topFade * botFade;
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D uTex;
+    varying float vAlpha;
+    void main() {
+      vec4 tex = texture2D(uTex, gl_PointCoord);
+      gl_FragColor = vec4(1.0, 1.0, 1.0, tex.a * vAlpha * 0.85);
+    }
+  `,
   transparent: true,
-  opacity: 0.9,
   depthWrite: false,
-}));
+});
+
+const snow = new THREE.Points(snowGeom, snowMat);
+// Points frustum culling compares the geometry's bounding sphere to
+// the camera; since our shader sends each flake cycling through the
+// whole volume we need the sphere to cover the full SNOW_AREA/SNOW_TOP
+// box, otherwise flakes blink out when the camera looks past origin.
+snowGeom.boundingSphere = new THREE.Sphere(
+  new THREE.Vector3(0, SNOW_TOP * 0.5, 0),
+  Math.sqrt(SNOW_AREA * SNOW_AREA * 0.5 + SNOW_TOP * SNOW_TOP * 0.25),
+);
 scene.add(snow);
 
 // ------------------------------------------------------------------
@@ -1381,22 +1435,8 @@ function loop(now) {
     }
   }
 
-  // Snow — fall straight-ish with a gentle per-flake sway, respawn at
-  // the top when they hit the ground.
-  const snowArr = snowGeom.attributes.position.array;
-  for (let i = 0; i < SNOW_COUNT; i++) {
-    const ix = i * 3;
-    const sway = Math.sin(t * 0.8 + snowSway[i]) * 0.15;
-    snowArr[ix]     += (snowVel[ix]     + sway) * dt;
-    snowArr[ix + 1] +=  snowVel[ix + 1]         * dt;
-    snowArr[ix + 2] +=  snowVel[ix + 2]         * dt;
-    if (snowArr[ix + 1] < 0.05) {
-      snowArr[ix]     = (Math.random() - 0.5) * SNOW_AREA;
-      snowArr[ix + 1] = SNOW_TOP + Math.random() * 3;
-      snowArr[ix + 2] = (Math.random() - 0.5) * SNOW_AREA;
-    }
-  }
-  snowGeom.attributes.position.needsUpdate = true;
+  // Snow — fall + sway + drift computed entirely in the vertex shader.
+  snowMat.uniforms.uTime.value = t;
 
   for (const g of portals) {
     g.userData.torus.rotation.z += dt * 0.9;
