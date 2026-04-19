@@ -789,6 +789,91 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+// Marquee variant: if the text fits within maxWidth, returns a plain
+// textSprite; otherwise scrolls the text horizontally inside a pill of
+// fixed width. Caller must tick the returned sprite via userData.update(dt).
+const scrollingSprites = [];
+function scrollingTextSprite(text, opts = {}) {
+  const {
+    color = '#5a6578',
+    bg = 'rgba(248,249,252,0.85)',
+    fontSize = 24,
+    fontWeight = 500,
+    italic = true,
+    pad = 26,
+    radius = 18,
+    maxWidth = 520,
+    speed = 42,
+    gap = 80,
+  } = opts;
+
+  const measureCtx = document.createElement('canvas').getContext('2d');
+  const fontStyle = italic ? 'italic' : 'normal';
+  const font = `${fontStyle} ${fontWeight} ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+  measureCtx.font = font;
+  const textW = Math.ceil(measureCtx.measureText(text).width);
+  const fullW = textW + pad * 2;
+  if (fullW <= maxWidth) return textSprite(text, opts);
+
+  const w = maxWidth;
+  const h = fontSize + pad * 1.3;
+  const cvs = document.createElement('canvas');
+  cvs.width = w;
+  cvs.height = h;
+  const ctx = cvs.getContext('2d');
+
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+  sprite.scale.set(w / 100, h / 100, 1);
+
+  const loopW = textW + gap;
+  let offset = 0;
+
+  function paint() {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = bg;
+    roundRect(ctx, 0, 0, w, h, radius);
+    ctx.fill();
+
+    ctx.save();
+    roundRect(ctx, 0, 0, w, h, radius);
+    ctx.clip();
+
+    ctx.font = font;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const baseX = pad - offset;
+    ctx.fillText(text, baseX, h / 2);
+    ctx.fillText(text, baseX + loopW, h / 2);
+
+    // Soft edge fade so text rolls in/out instead of hard-cutting.
+    const fadeW = pad;
+    const left = ctx.createLinearGradient(0, 0, fadeW, 0);
+    left.addColorStop(0, bg);
+    left.addColorStop(1, 'rgba(248,249,252,0)');
+    ctx.fillStyle = left;
+    ctx.fillRect(0, 0, fadeW, h);
+    const right = ctx.createLinearGradient(w - fadeW, 0, w, 0);
+    right.addColorStop(0, 'rgba(248,249,252,0)');
+    right.addColorStop(1, bg);
+    ctx.fillStyle = right;
+    ctx.fillRect(w - fadeW, 0, fadeW, h);
+
+    ctx.restore();
+    tex.needsUpdate = true;
+  }
+
+  paint();
+  sprite.userData.update = (dt) => {
+    offset = (offset + speed * dt) % loopW;
+    paint();
+  };
+  scrollingSprites.push(sprite);
+  return sprite;
+}
+
 // ------------------------------------------------------------------
 // Portals
 // ------------------------------------------------------------------
@@ -858,7 +943,7 @@ function makePortal(game, angle) {
   group.add(title);
 
   if (game.description) {
-    const sub = textSprite(game.description, {
+    const sub = scrollingTextSprite(game.description, {
       color: '#5a6578',
       bg: 'rgba(248,249,252,0.85)',
       fontSize: 24,
@@ -1824,6 +1909,7 @@ function loop(now) {
     g.userData.torus.rotation.z += dt * 0.9;
     g.userData.disc.material.opacity = 0.3 + Math.sin(t * 2.5 + g.userData.angle) * 0.14;
   }
+  for (const s of scrollingSprites) s.userData.update(dt);
   if (returnPortal) {
     returnPortal.torus.rotation.z += dt * 0.9;
     returnPortal.disc.material.opacity = 0.32 + Math.sin(t * 2.5) * 0.14;
